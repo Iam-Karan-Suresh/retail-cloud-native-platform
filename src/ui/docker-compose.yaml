@@ -1,0 +1,7 @@
+services:
+  ui:
+    build:
+      context: .
+      restart: always
+      read_only: true
+      
