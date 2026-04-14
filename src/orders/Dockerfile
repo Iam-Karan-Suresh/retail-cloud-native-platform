@@ -15,7 +15,7 @@ COPY ./src ./src
 
 # Compile the project
 RUN ./mvnw -DskipTests package -q && \
-    mv /target/ui-0.0.1-SNAPSHOT.jar app.jar
+    mv /target/orders-0.0.1-SNAPSHOT.jar app.jar
 
 # ------------------Runtime Stage ----------------
 FROM eclipse-temurin:21-jre-jammy
@@ -36,10 +36,11 @@ ENV JAVA_TOOL_OPTIONS=
 ENV SPRING_PROFILES_ACTIVE=prod
 
 WORKDIR /app
-USER appuser
 
 COPY ./ATTRIBUTION.md ./
 COPY --chown=appuser:appuser --from=build-env /build/app.jar .
+
+USER appuser
 
 EXPOSE 8080
 
