@@ -2,7 +2,7 @@
 FROM maven:3.9.9-eclipse-temurin-21 AS build-env
 
 VOLUME /tmp
-WORKDIR /
+WORKDIR /build
 
 COPY .mvn .mvn
 COPY mvnw .
@@ -15,7 +15,7 @@ COPY ./src ./src
 
 # Compile the project
 RUN ./mvnw -DskipTests package -q && \
-    mv target/ui-0.0.1-SNAPSHOT.jar app.jar
+    mv target/*.jar app.jar
 
 
 # ------------------Runtime Stage ----------------
@@ -27,7 +27,7 @@ ENV APPGID=1000
 
 # Add user
 RUN useradd \
-    --home "/app"
+    --home "/app" \
     --create-home \
     --user-group \
     --uid "$APPUID" \
@@ -39,9 +39,9 @@ ENV SPRING_PROFILES_ACTIVE=prod
 WORKDIR /app
 USER appuser
 
-COPY ./ATTRIBUTION.md ./LICENCES.md
-COPY --chown=appuser:appuser --from=build-env /app.jar .
+COPY ./ATTRIBUTION.md ./
+COPY --chown=appuser:appuser --from=build-env /build/app.jar .
 
 EXPOSE 8080
 
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
