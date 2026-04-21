@@ -48,6 +48,8 @@ Selector labels
 {{- define "ui.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "ui.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: service
+app.kubernetes.io/owner: retail-cloud-native-platform
 {{- end }}
 
 {{/*
@@ -76,3 +78,8 @@ Create the name of configmap to use
 {{- define "ui.podAnnotations" -}}
 {{- if or .Values.metrics.enabled .Values.podAnnotations }}
 {{- $podAnnotations := .Values.podAnnotations }}
+{{- $metricsAnnotations := .Values.metrics.podAnnotations }}
+{{- $allAnnotations := merge $podAnnotations $metricsAnnotations }}
+{{- toYaml $allAnnotations }}
+{{- end }}
+{{- end -}}
