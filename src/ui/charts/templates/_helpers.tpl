@@ -1,3 +1,4 @@
+{{/* vim: set filetype=mustache: */}}
 {{/*
 Expand the name of the chart.
 */}}
@@ -49,7 +50,7 @@ Selector labels
 app.kubernetes.io/name: {{ include "ui.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: service
-app.kubernetes.io/owner: retail-cloud-native-platform
+app.kubernetes.io/owner: retail-store-sample
 {{- end }}
 
 {{/*
@@ -64,9 +65,9 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
-Create the name of configmap to use
+Create the name of the config map to use
 */}}
-{{- define "ui.configMapName"-}}
+{{- define "ui.configMapName" -}}
 {{- if .Values.configMap.create }}
 {{- default (include "ui.fullname" .) .Values.configMap.name }}
 {{- else }}
@@ -77,8 +78,8 @@ Create the name of configmap to use
 {{/* podAnnotations */}}
 {{- define "ui.podAnnotations" -}}
 {{- if or .Values.metrics.enabled .Values.podAnnotations }}
-{{- $podAnnotations := .Values.podAnnotations }}
-{{- $metricsAnnotations := .Values.metrics.podAnnotations }}
+{{- $podAnnotations := .Values.podAnnotations}}
+{{- $metricsAnnotations := .Values.metrics.podAnnotations}}
 {{- $allAnnotations := merge $podAnnotations $metricsAnnotations }}
 {{- toYaml $allAnnotations }}
 {{- end }}
