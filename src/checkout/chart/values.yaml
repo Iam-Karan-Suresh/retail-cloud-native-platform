@@ -1,0 +1,139 @@
+# =============================================================================
+# SPOT-OPTIMIZED VALUES for Checkout Service
+# =============================================================================
+# Checkout is a stateless Node.js/NestJS API. It uses Redis for session
+# cache or in-memory. The service itself holds ZERO local state.
+# PERFECT candidate for spot instances.
+#
+# Redis (stateful cache) → pinned to On-Demand system nodes.
+# =============================================================================
+
+# Default values for checkout.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 3
+image:
+  repository: public.ecr.aws/aws-containers/retail-store-sample-checkout
+  pullPolicy: Always
+  tag: "1.2.2"
+imagePullSecrets:
+  - name: regcred
+nameOverride: ''
+fullnameOverride: ''
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ''
+podAnnotations: {}
+podSecurityContext:
+  fsGroup: 1000
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+service:
+  type: ClusterIP
+  port: 80
+resources:
+  limits:
+    memory: 256Mi
+  requests:
+    cpu: 128m
+    memory: 256Mi
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# ---------------------------------------------------------------------------
+# SPOT INSTANCE SCHEDULING
+# ---------------------------------------------------------------------------
+nodeSelector:
+  role: spot-worker
+
+tolerations: []
+
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: "node.kubernetes.io/lifecycle"
+              operator: In
+              values: ["spot"]
+
+# ---------------------------------------------------------------------------
+# TOPOLOGY SPREAD
+# ---------------------------------------------------------------------------
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: retail-store-sample-checkout-chart
+
+metrics:
+  enabled: true
+  podAnnotations:
+    prometheus.io/scrape: 'true'
+    prometheus.io/port: '8080'
+    prometheus.io/path: '/metrics'
+configMap:
+  create: true
+  name:
+app:
+  persistence:
+    provider: 'in-memory'
+    redis:
+      endpoint: ''
+  endpoints:
+    orders: http://retail-store-orders:80
+
+# ---------------------------------------------------------------------------
+# REDIS (STATEFUL CACHE) → On-Demand system nodes ONLY
+# Redis holds in-flight checkout sessions — losing it mid-checkout = bad UX.
+# ---------------------------------------------------------------------------
+redis:
+  create: false
+  image:
+    repository: public.ecr.aws/docker/library/redis
+    pullPolicy: IfNotPresent
+    tag: "6.0-alpine"
+  service:
+    type: ClusterIP
+    port: 6379
+  podAnnotations: {}
+  # Pin Redis to On-Demand system nodes
+  nodeSelector:
+    role: system
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+      effect: NoSchedule
+  affinity: {}
+securityGroups:
+  create: false
+  securityGroupIds: []
+opentelemetry:
+  enabled: false
+  instrumentation: ''
+
+# ---------------------------------------------------------------------------
+# POD DISRUPTION BUDGET
+# ---------------------------------------------------------------------------
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+  maxUnavailable: 1

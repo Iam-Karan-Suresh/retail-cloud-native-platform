@@ -1,0 +1,195 @@
+# =============================================================================
+# SPOT-OPTIMIZED VALUES for Orders Service
+# =============================================================================
+# Orders is a stateless Java/Spring Boot API. It uses PostgreSQL for
+# persistence and RabbitMQ for async messaging. The service itself holds
+# ZERO local state — it's a pure API layer over the database.
+# PERFECT candidate for spot instances.
+#
+# PostgreSQL (stateful database) → On-Demand system nodes.
+# RabbitMQ (stateful message broker) → On-Demand system nodes.
+# =============================================================================
+
+# Default values for orders.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 3
+image:
+  repository: public.ecr.aws/aws-containers/retail-store-sample-orders
+  pullPolicy: Always
+  tag: "1.2.2"
+imagePullSecrets:
+  - name: regcred
+nameOverride: ""
+fullnameOverride: ""
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+podAnnotations: {}
+podSecurityContext:
+  fsGroup: 1000
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+service:
+  type: ClusterIP
+  port: 80
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 256m
+    memory: 512Mi
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# ---------------------------------------------------------------------------
+# SPOT INSTANCE SCHEDULING
+# ---------------------------------------------------------------------------
+nodeSelector:
+  role: spot-worker
+
+tolerations: []
+
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: "node.kubernetes.io/lifecycle"
+              operator: In
+              values: ["spot"]
+
+# ---------------------------------------------------------------------------
+# TOPOLOGY SPREAD
+# ---------------------------------------------------------------------------
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: retail-store-sample-orders-chart
+
+metrics:
+  enabled: true
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/actuator/prometheus"
+configMap:
+  create: true
+  name:
+app:
+  persistence:
+    provider: 'in-memory'
+    endpoint: ''
+    database: 'orders'
+    secret:
+      create: true
+      name: orders-db
+      username: orders
+      password: ""
+  messaging:
+    provider: 'in-memory'
+    rabbitmq:
+      addresses: []
+      secret:
+        create: true
+        name: orders-rabbitmq
+        username: ""
+        password: ""
+
+# ---------------------------------------------------------------------------
+# POSTGRESQL (STATEFUL DATABASE) → On-Demand system nodes ONLY
+# Losing a PostgreSQL instance on spot = data loss + corruption.
+# ---------------------------------------------------------------------------
+postgresql:
+  create: false
+  image:
+    repository: public.ecr.aws/docker/library/postgres
+    pullPolicy: IfNotPresent
+    tag: "13"
+  service:
+    type: ClusterIP
+    port: 5432
+  podAnnotations: {}
+  # Pin PostgreSQL to On-Demand system nodes
+  nodeSelector:
+    role: system
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+      effect: NoSchedule
+  affinity: {}
+  persistentVolume:
+    enabled: false
+    annotations: {}
+    labels: {}
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+    # storageClass: gp2
+
+# ---------------------------------------------------------------------------
+# RABBITMQ (STATEFUL MESSAGE BROKER) → On-Demand system nodes ONLY
+# RabbitMQ stores unacknowledged messages on disk. Spot reclaim = message loss.
+# ---------------------------------------------------------------------------
+rabbitmq:
+  create: false
+  image:
+    repository: public.ecr.aws/docker/library/rabbitmq
+    pullPolicy: IfNotPresent
+    tag: "3.8-management"
+  service:
+    type: ClusterIP
+    amqp:
+      port: 5672
+    http:
+      port: 15672
+  podAnnotations: {}
+  # Pin RabbitMQ to On-Demand system nodes
+  nodeSelector:
+    role: system
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+      effect: NoSchedule
+  affinity: {}
+  persistentVolume:
+    enabled: false
+    annotations: {}
+    labels: {}
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+    # storageClass: gp2
+securityGroups:
+  create: false
+  securityGroupIds: []
+opentelemetry:
+  enabled: false
+  instrumentation: ""
+
+# ---------------------------------------------------------------------------
+# POD DISRUPTION BUDGET
+# ---------------------------------------------------------------------------
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+  maxUnavailable: 1

@@ -12,12 +12,10 @@ This infrastructure implements a **zero-downtime spot instance migration system*
 │  │ Spot Interruption │  │    Rebalance     │  │ Instance State   │  │
 │  │   Warning (2min)  │  │  Recommendation  │  │    Change        │  │
 │  └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘  │
-│           │                     │                     │             │
 │           └─────────────────────┼─────────────────────┘             │
-│                                 │                                   │
 │                                 ▼                                   │
 │                    ┌────────────────────────┐                       │
-│                    │     SQS Queue          │                       │
+│                    │    SQS Queue           │                       │
 │                    │  (5-min retention,     │                       │
 │                    │   long-polling)        │                       │
 │                    └───────────┬────────────┘                       │
@@ -28,32 +26,70 @@ This infrastructure implements a **zero-downtime spot instance migration system*
 │                         EKS Cluster                                 │
 │                                                                     │
 │  ┌─────────────────────────────────────────────────────┐           │
-│  │  System Nodes (On-Demand, tainted)                   │           │
+│  │  ON-DEMAND SYSTEM NODES (tainted: CriticalAddonsOnly)│           │
+│  │                                                       │           │
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────────────────┐ │           │
 │  │  │  CoreDNS  │ │  Ingress │ │  Node Termination    │ │           │
 │  │  │          │ │Controller│ │  Handler (NTH)        │ │           │
-│  │  └──────────┘ └──────────┘ │  ┌────────────────┐  │ │           │
-│  │                             │  │ Polls SQS      │  │ │           │
-│  │  ┌──────────┐ ┌──────────┐ │  │ Cordons node   │  │ │           │
-│  │  │ ArgoCD   │ │Prometheus│ │  │ Drains pods    │  │ │           │
-│  │  │          │ │ Grafana  │ │  │ Completes hook │  │ │           │
-│  │  └──────────┘ └──────────┘ │  └────────────────┘  │ │           │
-│  │                             └──────────────────────┘ │           │
+│  │  └──────────┘ └──────────┘ └──────────────────────┘ │           │
+│  │                                                       │           │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ │           │
+│  │  │ ArgoCD   │ │Prometheus│ │PostgreSQL│ │ MySQL  │ │           │
+│  │  │          │ │ Grafana  │ │(orders)  │ │(catlog)│ │           │
+│  │  └──────────┘ └──────────┘ └──────────┘ └────────┘ │           │
+│  │                                                       │           │
+│  │  ┌──────────┐ ┌──────────┐                           │           │
+│  │  │ RabbitMQ │ │  Redis   │                           │           │
+│  │  │(orders)  │ │(checkout)│                           │           │
+│  │  └──────────┘ └──────────┘                           │           │
 │  └─────────────────────────────────────────────────────┘           │
 │                                                                     │
 │  ┌─────────────────────────────────────────────────────┐           │
-│  │  Spot Worker Nodes (diverse instance types)          │           │
+│  │  SPOT WORKER NODES (t3/t3a/m5/m5a — 10 types)       │           │
 │  │                                                       │           │
-│  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐        │           │
-│  │  │ Pod A  │ │ Pod B  │ │ Pod C  │ │ Pod D  │        │           │
-│  │  │(AZ-a)  │ │(AZ-b)  │ │(AZ-c)  │ │(AZ-a)  │        │           │
-│  │  └────────┘ └────────┘ └────────┘ └────────┘        │           │
+│  │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐               │           │
+│  │  │ UI   │ │ UI   │ │ UI   │ │ UI   │  4 replicas   │           │
+│  │  │(AZ-a)│ │(AZ-b)│ │(AZ-c)│ │(AZ-a)│  PDB: min 3  │           │
+│  │  └──────┘ └──────┘ └──────┘ └──────┘               │           │
+│  │                                                       │           │
+│  │  ┌──────┐ ┌──────┐ ┌──────┐     ┌──────┐ ┌──────┐  │           │
+│  │  │ Cart │ │ Cart │ │ Cart │     │Catlog│ │Catlog│  │           │
+│  │  │(AZ-a)│ │(AZ-b)│ │(AZ-c)│     │(AZ-a)│ │(AZ-b)│  │           │
+│  │  └──────┘ └──────┘ └──────┘     └──────┘ └──────┘  │           │
+│  │                                                       │           │
+│  │  ┌──────┐ ┌──────┐ ┌──────┐     ┌──────┐ ┌──────┐  │           │
+│  │  │Chkout│ │Chkout│ │Chkout│     │Orders│ │Orders│  │           │
+│  │  │(AZ-a)│ │(AZ-b)│ │(AZ-c)│     │(AZ-a)│ │(AZ-b)│  │           │
+│  │  └──────┘ └──────┘ └──────┘     └──────┘ └──────┘  │           │
 │  │                                                       │           │
 │  │  When spot reclaimed → NTH drains → pods reschedule  │           │
-│  │  to remaining spot nodes or new ones from ASG         │           │
 │  └─────────────────────────────────────────────────────┘           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Service Placement Matrix
+
+| Service | Node Type | Replicas | PDB (minAvailable) | Stateful? | Why? |
+|---------|-----------|----------|-------------------|-----------|------|
+| **UI** (frontend) | ☀️ SPOT | 4 | 3 | No | User-facing, stateless Java app. Extra replicas for visibility. |
+| **Cart** API | ☀️ SPOT | 3 | 2 | No | Stateless Spring Boot API. Cart data in DynamoDB (managed). |
+| **Catalog** API | ☀️ SPOT | 3 | 2 | No | Stateless Go API. Product data read from MySQL. |
+| **Checkout** API | ☀️ SPOT | 3 | 2 | No | Stateless NestJS API. Session state in Redis. |
+| **Orders** API | ☀️ SPOT | 3 | 2 | No | Stateless Spring Boot API. Orders persisted in PostgreSQL. |
+| MySQL (catalog DB) | 🔒 ON-DEMAND | 1 | N/A | **YES** | Database — data loss on spot reclaim. |
+| PostgreSQL (orders DB) | 🔒 ON-DEMAND | 1 | N/A | **YES** | Database — data corruption on hard kill. |
+| RabbitMQ (orders queue) | 🔒 ON-DEMAND | 1 | N/A | **YES** | Message broker — unacked messages lost. |
+| Redis (checkout cache) | 🔒 ON-DEMAND | 1 | N/A | **YES** | Cache — in-flight checkout sessions lost. |
+| DynamoDB Local (cart) | 🔒 ON-DEMAND | 1 | N/A | **YES** | Local DB emulator — ephemeral but still data. |
+| CoreDNS | 🔒 ON-DEMAND | 2 | N/A | System | DNS dies → entire cluster can't resolve services. |
+| Ingress Controller | 🔒 ON-DEMAND | 2 | N/A | System | Traffic ingress dies → all external access lost. |
+| NTH | 🔒 ON-DEMAND | 1 | N/A | System | NTH dies on spot → no one handles the next reclaim. |
+| ArgoCD | 🔒 ON-DEMAND | 2 | N/A | System | GitOps controller — must survive spot reclaims. |
+| Prometheus/Grafana | 🔒 ON-DEMAND | varies | N/A | System | Monitoring — can't monitor spot events if monitoring is down. |
+
+---
 
 ## The 2-Minute Window — What Happens in Sequence
 
@@ -90,118 +126,61 @@ terraform/
 ├── versions.tf                  # Provider version constraints
 └── README.md                    # This file
 
+src/
+├── ui/chart/values.yaml         # 4 replicas, spot, dual topology spread, PDB=3
+├── cart/chart/values.yaml       # 3 replicas, spot, topology spread, PDB=2
+├── catalog/chart/values.yaml    # 3 replicas, spot, topology spread, PDB=2
+├── checkout/chart/values.yaml   # 3 replicas, spot, topology spread, PDB=2
+├── orders/chart/values.yaml     # 3 replicas, spot, topology spread, PDB=2
+└── app/chart/
+    ├── values.yaml              # Umbrella chart default values
+    └── values-stateful.yaml     # Overlay: enables DBs on On-Demand nodes
+
 k8s/
 ├── spot-resilience/
-│   └── deployment-template.yaml  # Reference deployment with PDB, topology spread
+│   └── deployment-template.yaml  # Service placement matrix documentation
 └── monitoring/
     └── spot-alerts.yaml          # Prometheus alerting rules for spot events
 ```
 
 ---
 
-## What Changed & Why
+## What Changed in Each Helm Chart
 
-### 1. Node Group Architecture — System vs Spot Split
+### Every Stateless Service (UI, Cart, Catalog, Checkout, Orders)
 
-| Aspect | Before | After | Why |
-|--------|--------|-------|-----|
-| Node Groups | Single `app_spot` group | `system` (On-Demand) + `spot_workers` (Spot) | Critical infra (DNS, Ingress, NTH) must NEVER run on spot instances |
-| System Taint | None | `CriticalAddonsOnly=true:NoSchedule` | Prevents app workloads from consuming system node capacity |
-| Instance Diversity | 4 types | 10 types (t3/t3a/m5/m5a) | More types = larger spot pool = lower interruption probability |
-| IMDSv2 | Not configured | Enforced globally | Security best practice — blocks SSRF attacks against metadata endpoint |
-| Labels | `role: core/application` | `role: system/spot-worker` + `node.kubernetes.io/lifecycle` | Standard labels for NTH, affinity rules, and monitoring queries |
+| Setting | Before | After | Why |
+|---------|--------|-------|-----|
+| `replicaCount` | `1` | `3` (UI: `4`) | Single replica + spot = downtime. Multiple replicas = zero-downtime during reclaim. |
+| `nodeSelector` | `{}` (any node) | `{ role: spot-worker }` | Pin to spot nodes for 60-80% cost savings. |
+| `affinity` | `{}` | Prefer `node.kubernetes.io/lifecycle: spot` | Soft preference — falls back to on-demand gracefully. |
+| `topologySpreadConstraints` | `[]` | Spread across AZs | One spot reclaim in us-west-2a affects 1 pod, not all. |
+| `podDisruptionBudget.enabled` | `false` | `true` | NTH respects PDBs — guarantees minimum pods during drain. |
+| `podDisruptionBudget.minAvailable` | `2` (unused) | `2` (UI: `3`) | Active protection during spot reclaim events. |
 
-**Cost Impact**: Spot instances are 60-80% cheaper than On-Demand. System nodes are small (t3.medium) and only run cluster infrastructure.
+### Every Stateful Backing Service (MySQL, PostgreSQL, RabbitMQ, Redis, DynamoDB Local)
 
-### 2. Spot Termination Pipeline (NEW)
+| Setting | Before | After | Why |
+|---------|--------|-------|-----|
+| `nodeSelector` | `{}` (any node) | `{ role: system }` | Pin to On-Demand — spot reclaim = data loss. |
+| `tolerations` | `[]` | CriticalAddonsOnly toleration | System nodes have a taint — stateful services must tolerate it. |
 
-| Component | File | Purpose |
-|-----------|------|---------|
-| **SQS Queue** | `spot-termination.tf` | Central inbox for all termination events. 5-min retention, long-polling to reduce API costs. |
-| **EventBridge Rule: Spot Interruption** | `spot-termination.tf` | Catches the 2-minute warning from AWS |
-| **EventBridge Rule: Rebalance** | `spot-termination.tf` | Catches rebalance recommendations (fires BEFORE interruption — extra lead time) |
-| **EventBridge Rule: State Change** | `spot-termination.tf` | Catches instance stopping/terminating events |
-| **EventBridge Rule: Scheduled Change** | `spot-termination.tf` | Catches AWS maintenance events |
-| **ASG Lifecycle Hook** | `spot-termination.tf` | Pauses ASG termination for 300s, giving NTH time to drain before AWS kills the instance |
-| **SQS Queue Policy** | `spot-termination.tf` | Scoped to only allow EventBridge to push — least privilege |
+### `values-stateful.yaml` (Umbrella Override)
 
-### 3. Node Termination Handler (NEW)
-
-| Aspect | Details |
-|--------|---------|
-| **Mode** | Queue Processor (not DaemonSet) — recommended for production |
-| **File** | `node-termination-handler.tf` |
-| **Runs on** | System nodes only (nodeSelector: `role=system`) |
-| **Tolerates** | `CriticalAddonsOnly` taint |
-| **IRSA** | Dedicated IAM role via `irsa.tf` — no static credentials |
-| **Metrics** | Exposes Prometheus metrics on port 9092 |
-| **Resources** | 50m/64Mi request, 100m/128Mi limit — NTH is lightweight |
-
-**Why Queue Processor instead of DaemonSet?**
-- Doesn't require IMDSv1 access
-- Single deployment vs one pod per node
-- Scales better for large clusters
-- Works with ALL event types (including ASG lifecycle)
-
-### 4. IRSA — Zero Static Credentials (NEW)
-
-| Aspect | Details |
-|--------|---------|
-| **File** | `irsa.tf` |
-| **Pattern** | OIDC federation — K8s service account maps to IAM role |
-| **Scope** | SQS: scoped to specific queue ARN. EC2/ASG: read-only describe |
-| **Why** | No AWS access keys stored in cluster. Pods get temporary credentials via STS. If a pod is compromised, the blast radius is limited to SQS read + EC2 describe. |
-
-### 5. Workload Resilience Patterns (NEW)
-
-| Pattern | File | Why |
-|---------|------|-----|
-| **TopologySpreadConstraints** | `k8s/spot-resilience/deployment-template.yaml` | Spread pods across AZs AND nodes — one spot reclaim can't kill all replicas |
-| **PodDisruptionBudget** | `k8s/spot-resilience/deployment-template.yaml` | NTH respects PDBs — guarantees 50% of pods stay running during drain |
-| **Node Affinity (soft)** | `k8s/spot-resilience/deployment-template.yaml` | Prefer spot, fall back to on-demand — apps never get stuck if spot is unavailable |
-| **Graceful Shutdown** | `k8s/spot-resilience/deployment-template.yaml` | preStop hook (5s) + terminationGracePeriodSeconds (90s) — fits within 2-min window |
-| **Health Probes** | `k8s/spot-resilience/deployment-template.yaml` | Readiness probe removes pod from Service BEFORE shutdown begins |
-
-### 6. Observability (NEW)
-
-| Alert | Severity | Trigger |
-|-------|----------|---------|
-| `SpotNodeDraining` | Warning | A spot node is being drained — normal operational event |
-| `HighSpotInterruptionRate` | Critical | Too many interruptions — add more instance type diversity |
-| `NTHNotRunning` | Critical | NTH is down — P1 incident, spot reclaims won't be handled |
-| `PodsPendingOnSpotNodes` | Warning | Pods stuck in Pending — possible capacity shortage |
-| `PDBBlockingEviction` | Critical | PDB is blocking drain — workloads stuck on dying node |
-
-### 7. Addons Hardened
-
-| Addon | Change | Why |
-|-------|--------|-----|
-| **Ingress Controller** | Pinned to system nodes + CriticalAddonsOnly toleration + 2 replicas | Ingress on a spot node = potential traffic blackhole during reclaim |
-| **Prometheus Stack** | Enabled by default | CloudWatch is 10x more expensive for the same metrics |
-
-### 8. Variables & Validation
-
-| Variable | Change | Why |
-|----------|--------|-----|
-| `environment` | Added validation (dev/staging/prod only) | Prevent typos that could create orphaned resources |
-| `kubernetes_version` | Changed to `1.31` | `1.33` doesn't exist yet — would fail on apply |
-| `spot_instance_types` | New variable | Configurable instance diversity without editing main.tf |
-| `spot_min/max/desired_size` | New variables | Tunable spot capacity per environment |
+The overlay file now explicitly pins every backing service to system nodes with the correct tolerations, so even when deploying the full stateful stack, databases never land on spot instances.
 
 ---
 
-## Cost Comparison
+## Cost Impact
 
-| Component | Without Spot | With This Architecture | Savings |
-|-----------|-------------|----------------------|---------|
-| 3x t3.medium On-Demand (24/7) | ~$90/mo | ~$27/mo (Spot) | **70%** |
-| 5x t3.large On-Demand (24/7) | ~$300/mo | ~$75/mo (Spot) | **75%** |
-| CloudWatch Container Insights | ~$50-200/mo | $0 (Prometheus) | **100%** |
-| AWS CodePipeline/CD | ~$15-50/mo | $0 (ArgoCD) | **100%** |
-| SQS (NTH events) | — | ~$0.01/mo | Negligible |
-| EventBridge rules | — | Free tier | $0 |
-
-**Estimated monthly savings for a 10-node cluster: $400-700/month**
+| Component | Without Spot (On-Demand only) | With This Architecture | Monthly Savings |
+|-----------|------------------------------|----------------------|-----------------|
+| 16 app pods (5 services × ~3 each) | ~$200/mo | ~$50/mo (Spot) | **$150** |
+| 5 stateful pods (DBs/caches) | ~$80/mo | ~$80/mo (On-Demand — stays same) | $0 |
+| System pods (DNS, Ingress, NTH, etc.) | ~$60/mo | ~$60/mo (On-Demand — stays same) | $0 |
+| CloudWatch vs Prometheus | ~$100/mo | $0 | **$100** |
+| SQS + EventBridge | — | ~$0.01/mo | Negligible |
+| **Total** | **~$440/mo** | **~$190/mo** | **~$250/mo (57%)** |
 
 ---
 
@@ -218,34 +197,23 @@ terraform apply tfplan
 # 2. Configure kubectl
 $(terraform output -raw configure_kubectl)
 
-# 3. Verify NTH is running
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-node-termination-handler
-
-# 4. Verify node groups
+# 3. Verify node groups
 kubectl get nodes -L role,node.kubernetes.io/lifecycle
 
-# 5. Apply spot-resilient workload template
-kubectl apply -f ../k8s/spot-resilience/deployment-template.yaml
+# 4. Verify NTH is running
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-node-termination-handler
 
-# 6. Apply monitoring alerts
-kubectl apply -f ../k8s/monitoring/spot-alerts.yaml
+# 5. Deploy with Helm (in-memory mode)
+cd ../src/app/chart
+helm dependency update .
+helm install retail-store . -f values.yaml
 
-# 7. Get ArgoCD password
+# 6. Deploy with Helm (stateful mode — DBs on On-Demand)
+helm install retail-store . -f values.yaml -f values-stateful.yaml
+
+# 7. Apply monitoring alerts
+kubectl apply -f ../../../k8s/monitoring/spot-alerts.yaml
+
+# 8. Get ArgoCD password
 eval $(terraform output -raw argocd_initial_password_command)
-```
-
-## Verifying Spot Termination Handling
-
-```bash
-# Watch NTH logs in real-time
-kubectl logs -f -n kube-system -l app.kubernetes.io/name=aws-node-termination-handler
-
-# Check SQS queue depth (should be 0 when idle)
-aws sqs get-queue-attributes \
-  --queue-url $(terraform output -raw spot_termination_sqs_queue_url) \
-  --attribute-names ApproximateNumberOfMessages
-
-# Simulate a spot interruption (for testing)
-# Use AWS FIS (Fault Injection Simulator) to trigger a spot interruption
-# on a test node and watch NTH handle it gracefully.
 ```

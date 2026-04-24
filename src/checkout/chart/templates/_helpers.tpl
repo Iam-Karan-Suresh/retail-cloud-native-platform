@@ -2,8 +2,8 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "ui.name" -}}
-{{- default "ui" .Values.nameOverride | trunc 63 | trimSuffix "-" }}
+{{- define "checkout.name" -}}
+{{- default "checkout" .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
@@ -11,11 +11,11 @@ Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.
 */}}
-{{- define "ui.fullname" -}}
+{{- define "checkout.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
-{{- $name := default "ui" .Values.nameOverride }}
+{{- $name := default "checkout" .Values.nameOverride }}
 {{- if contains $name .Release.Name }}
 {{- .Release.Name | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -27,16 +27,16 @@ If release name contains chart name it will be used as a full name.
 {{/*
 Create chart name and version as used by the chart label.
 */}}
-{{- define "ui.chart" -}}
-{{- printf "%s-%s" "ui" .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+{{- define "checkout.chart" -}}
+{{- printf "%s-%s" "checkout" .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Common labels
 */}}
-{{- define "ui.labels" -}}
-helm.sh/chart: {{ include "ui.chart" . }}
-{{ include "ui.selectorLabels" . }}
+{{- define "checkout.labels" -}}
+helm.sh/chart: {{ include "checkout.chart" . }}
+{{ include "checkout.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -46,8 +46,8 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 Selector labels
 */}}
-{{- define "ui.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "ui.name" . }}
+{{- define "checkout.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "checkout.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: service
 app.kubernetes.io/owner: retail-store-sample
@@ -56,9 +56,9 @@ app.kubernetes.io/owner: retail-store-sample
 {{/*
 Create the name of the service account to use
 */}}
-{{- define "ui.serviceAccountName" -}}
+{{- define "checkout.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
-{{- default (include "ui.fullname" .) .Values.serviceAccount.name }}
+{{- default (include "checkout.fullname" .) .Values.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
@@ -67,9 +67,9 @@ Create the name of the service account to use
 {{/*
 Create the name of the config map to use
 */}}
-{{- define "ui.configMapName" -}}
+{{- define "checkout.configMapName" -}}
 {{- if .Values.configMap.create }}
-{{- default (include "ui.fullname" .) .Values.configMap.name }}
+{{- default (include "checkout.fullname" .) .Values.configMap.name }}
 {{- else }}
 {{- default "default" .Values.configMap.name }}
 {{- end }}
@@ -77,7 +77,7 @@ Create the name of the config map to use
 
 
 {{/* podAnnotations */}}
-{{- define "ui.podAnnotations" -}}
+{{- define "checkout.podAnnotations" -}}
 {{- if or .Values.metrics.enabled .Values.podAnnotations }}
 {{- $podAnnotations := .Values.podAnnotations}}
 {{- $metricsAnnotations := .Values.metrics.podAnnotations}}
@@ -85,3 +85,29 @@ Create the name of the config map to use
 {{- toYaml $allAnnotations }}
 {{- end }}
 {{- end -}}
+
+{{- define "checkout.redis.fullname" -}}
+{{- include "checkout.fullname" . }}-redis
+{{- end -}}
+
+{{/*
+Common labels for redis
+*/}}
+{{- define "checkout.redis.labels" -}}
+helm.sh/chart: {{ include "checkout.chart" . }}
+{{ include "checkout.redis.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Selector labels for redis
+*/}}
+{{- define "checkout.redis.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "checkout.fullname" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: redis
+app.kubernetes.io/owner: retail-store-sample
+{{- end }}
