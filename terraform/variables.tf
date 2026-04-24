@@ -51,7 +51,7 @@ variable "enable_single_nat_gateway" {
 }
 
 variable "enable_monitoring" {
-  description = "Enable monitoring stack (Prometheus, Grafana)"
+  description = "Enable open-source monitoring stack (Prometheus, Grafana) to avoid expensive CloudWatch costs"
   type        = bool
-  default     = false
+  default     = true
 }

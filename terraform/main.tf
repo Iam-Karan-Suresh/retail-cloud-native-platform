@@ -70,17 +70,46 @@ module "retail_app_eks" {
 
   # EKS Managed Node Group(s)
   eks_managed_node_group_defaults = {
-    instance_types = ["t3.medium"]
+    ami_type       = "AL2_x86_64"
+    disk_size      = 20
+    instance_types = ["t3.medium", "t3.large"]
   }
 
   eks_managed_node_groups = {
-    general_purpose = {
+    # Core node group for critical cluster addons (On-Demand for stability)
+    core = {
       min_size     = 1
-      max_size     = 3
-      desired_size = 2
+      max_size     = 2
+      desired_size = 1
 
       instance_types = ["t3.medium"]
       capacity_type  = "ON_DEMAND"
+      
+      labels = {
+        role = "core"
+      }
+    }
+    
+    # Spot node group for application workloads (Cost optimization)
+    app_spot = {
+      min_size     = 1
+      max_size     = 5
+      desired_size = 2
+
+      instance_types = ["t3.medium", "t3.large", "t3a.medium", "t3a.large"]
+      capacity_type  = "SPOT"
+      
+      labels = {
+        role = "application"
+      }
+      
+      # Taint spot nodes so only tolerant workloads run on them if needed
+      # (Optional: uncomment if you want strict scheduling)
+      # taints = [{
+      #   key    = "spotInstance"
+      #   value  = "true"
+      #   effect = "PREFER_NO_SCHEDULE"
+      # }]
     }
   }
 
@@ -93,8 +122,9 @@ module "retail_app_eks" {
   kms_key_description = "EKS cluster ${local.cluster_name} encryption key"
   kms_key_deletion_window_in_days = 7
   
-  # Cluster logging (optional - can be expensive)
-  cluster_enabled_log_types = []
+  # Cluster logging - Enable audit logs for production security compliance
+  # (Removed expensive logs like api, authenticator unless strictly required)
+  cluster_enabled_log_types = ["audit"]
 
   tags = local.common_tags
 }
