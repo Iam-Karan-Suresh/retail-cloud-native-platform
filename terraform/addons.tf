@@ -22,14 +22,14 @@ module "eks_addons" {
   }
 
   # =============================================================================
-  # NGINX INGRESS CONTROLLER - Load Balancing and Routing
+  # NGINX INGRESS CONTROLLER — Load Balancing and Routing
+  # Pinned to SYSTEM nodes (On-Demand) — ingress must never be interrupted
   # =============================================================================
   enable_ingress_nginx = true
   ingress_nginx = {
     most_recent = true
     namespace   = "ingress-nginx"
-    
-    # Basic configuration
+
     set = [
       {
         name  = "controller.service.type"
@@ -38,6 +38,24 @@ module "eks_addons" {
       {
         name  = "controller.service.externalTrafficPolicy"
         value = "Local"
+      },
+      # Pin ingress controller to system (on-demand) nodes
+      {
+        name  = "controller.nodeSelector.role"
+        value = "system"
+      },
+      # Tolerate the CriticalAddonsOnly taint on system nodes
+      {
+        name  = "controller.tolerations[0].key"
+        value = "CriticalAddonsOnly"
+      },
+      {
+        name  = "controller.tolerations[0].operator"
+        value = "Exists"
+      },
+      {
+        name  = "controller.tolerations[0].effect"
+        value = "NoSchedule"
       },
       {
         name  = "controller.resources.requests.cpu"
@@ -54,9 +72,14 @@ module "eks_addons" {
       {
         name  = "controller.resources.limits.memory"
         value = "256Mi"
+      },
+      # HA: run 2 replicas of ingress controller
+      {
+        name  = "controller.replicaCount"
+        value = "2"
       }
     ]
-    
+
     # AWS Load Balancer specific annotations
     set_sensitive = [
       {
@@ -88,21 +111,13 @@ module "eks_addons" {
 
   # =============================================================================
   # OPEN-SOURCE MONITORING STACK (Cost effective compared to CloudWatch)
+  # Prometheus + Grafana — runs on system nodes for stability
   # =============================================================================
   enable_kube_prometheus_stack = var.enable_monitoring
   kube_prometheus_stack = {
     most_recent = true
     namespace   = "monitoring"
   }
-
-  # =============================================================================
-  # OPTIONAL: AWS LOAD BALANCER CONTROLLER
-  # =============================================================================
-  # enable_aws_load_balancer_controller = true
-  # aws_load_balancer_controller = {
-  #   most_recent = true
-  #   namespace   = "kube-system"
-  # }
 
   depends_on = [module.retail_app_eks]
 }

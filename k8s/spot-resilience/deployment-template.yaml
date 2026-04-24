@@ -1,0 +1,177 @@
+# =============================================================================
+# SPOT-RESILIENT DEPLOYMENT TEMPLATE
+# =============================================================================
+# This is the reference deployment manifest that every stateless service
+# in this platform should follow. It implements all the patterns needed
+# to survive spot instance reclaims without downtime.
+#
+# Key patterns:
+#   1. TopologySpreadConstraints — spread pods across AZs
+#   2. Affinity — prefer spot nodes, fall back to on-demand
+#   3. PodDisruptionBudget — protect minimum availability during drains
+#   4. Graceful shutdown — preStop hook + terminationGracePeriodSeconds
+#   5. Resource requests — enable bin-packing and proper scheduling
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  labels:
+    app: api-service
+    tier: application
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: api-service
+  
+  # Rolling update — ensure zero-downtime during deployments AND spot drains
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1           # Create 1 new pod before killing old
+      maxUnavailable: 0     # Never reduce below desired count
+
+  template:
+    metadata:
+      labels:
+        app: api-service
+        tier: application
+    spec:
+      # -----------------------------------------------------------------
+      # TOPOLOGY SPREAD — distribute pods across Availability Zones
+      # Why: If all pods are in one AZ and that AZ's spot capacity drops,
+      # you lose everything. Spreading across AZs means a spot reclaim
+      # in us-west-2a only affects 1-2 pods, not all 4.
+      # -----------------------------------------------------------------
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: api-service
+        # Also spread across nodes within the same AZ
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: api-service
+
+      # -----------------------------------------------------------------
+      # NODE AFFINITY — prefer spot, fall back to on-demand gracefully
+      # This is a SOFT preference (preferred), not a hard requirement.
+      # If all spot nodes are gone, pods will schedule on on-demand.
+      # -----------------------------------------------------------------
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: "node.kubernetes.io/lifecycle"
+                    operator: In
+                    values: ["spot"]
+
+      containers:
+        - name: api-service
+          image: your-registry/api-service:latest
+          ports:
+            - containerPort: 8080
+              name: http
+
+          # ---------------------------------------------------------------
+          # GRACEFUL SHUTDOWN — the most critical piece
+          # ---------------------------------------------------------------
+          # When NTH drains a node, kubelet sends SIGTERM to this container.
+          # The preStop hook runs FIRST, giving in-flight requests time
+          # to complete before the process receives SIGTERM.
+          #
+          # Timeline:
+          #   T+0s    NTH starts draining
+          #   T+0s    kubelet sends preStop hook
+          #   T+5s    preStop completes, SIGTERM sent to process
+          #   T+5-85s App handles SIGTERM, closes connections
+          #   T+90s   If still running, kubelet sends SIGKILL (hard kill)
+          # ---------------------------------------------------------------
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+
+          # Must be LESS than the 2-minute spot warning window
+          terminationGracePeriodSeconds: 90
+
+          # ---------------------------------------------------------------
+          # HEALTH CHECKS — kubernetes needs to know if pod is healthy
+          # Without these, traffic may be sent to a pod that's shutting down
+          # ---------------------------------------------------------------
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+
+          # ---------------------------------------------------------------
+          # RESOURCES — always set requests for proper scheduling
+          # Without requests, the scheduler can't bin-pack effectively
+          # and you waste spot capacity.
+          # ---------------------------------------------------------------
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+
+          # ---------------------------------------------------------------
+          # ENVIRONMENT — inject useful metadata
+          # ---------------------------------------------------------------
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+
+---
+# =============================================================================
+# POD DISRUPTION BUDGET — protect availability during drains
+# =============================================================================
+# When NTH drains a node, it respects PDBs. This PDB says:
+#   "You can evict pods, but at least 50% must remain running."
+#
+# With 4 replicas, this means NTH can evict at most 2 at a time.
+# The scheduler will place the evicted pods on other nodes before
+# the next batch is evicted.
+# =============================================================================
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-service-pdb
+spec:
+  minAvailable: "50%"
+  selector:
+    matchLabels:
+      app: api-service

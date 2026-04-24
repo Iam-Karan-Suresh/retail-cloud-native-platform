@@ -20,6 +20,7 @@ resource "random_string" "suffix" {
 locals {
   # Cluster configuration with unique suffix to avoid conflicts
   cluster_name = "${var.cluster_name}-${random_string.suffix.result}"
+  account_id   = data.aws_caller_identity.current.account_id
 
   # Network configuration
   azs             = slice(data.aws_availability_zones.available.names, 0, 3)
