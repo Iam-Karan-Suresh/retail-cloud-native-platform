@@ -1,0 +1,117 @@
+{{- if .Values.gatewayAPI.enabled }}
+# =============================================================================
+# HTTPRoute — Gateway API route for UI service
+# =============================================================================
+# HTTPRoute replaces Ingress path rules. It attaches to the Gateway and
+# routes traffic to the UI backend service.
+#
+# Key differences from Ingress:
+#   - parentRefs bind this route to a specific Gateway (not className)
+#   - backendRefs replace backend.service stanzas
+#   - Filters replace annotations for header manipulation, redirects, etc.
+# =============================================================================
+{{- $fullName := include "ui.fullname" . -}}
+{{- $svcPort := .Values.service.port -}}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "ui.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ $fullName }}-gateway
+      namespace: {{ .Release.Namespace }}
+      sectionName: http
+  {{- if .Values.gatewayAPI.hostname }}
+  hostnames:
+    - {{ .Values.gatewayAPI.hostname | quote }}
+  {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      {{- if .Values.gatewayAPI.requestTimeout }}
+      timeouts:
+        request: {{ .Values.gatewayAPI.requestTimeout | quote }}
+      {{- end }}
+      {{- if .Values.gatewayAPI.requestBodySize }}
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: traefik.io
+            kind: Middleware
+            name: {{ $fullName }}-body-size
+      {{- end }}
+      backendRefs:
+        - name: {{ $fullName }}
+          port: {{ $svcPort }}
+          weight: 1
+{{- if .Values.gatewayAPI.tls.enabled }}
+---
+# ---------------------------------------------------------------------------
+# HTTPS HTTPRoute — bound to the HTTPS listener for TLS traffic
+# ---------------------------------------------------------------------------
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fullName }}-tls
+  labels:
+    {{- include "ui.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ $fullName }}-gateway
+      namespace: {{ .Release.Namespace }}
+      sectionName: https
+  {{- if .Values.gatewayAPI.tls.hostname }}
+  hostnames:
+    - {{ .Values.gatewayAPI.tls.hostname | quote }}
+  {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      {{- if .Values.gatewayAPI.requestTimeout }}
+      timeouts:
+        request: {{ .Values.gatewayAPI.requestTimeout | quote }}
+      {{- end }}
+      backendRefs:
+        - name: {{ $fullName }}
+          port: {{ $svcPort }}
+          weight: 1
+{{- end }}
+{{- if .Values.gatewayAPI.httpToHttpsRedirect }}
+---
+# ---------------------------------------------------------------------------
+# HTTP→HTTPS Redirect — Traefik Middleware for auto-redirect
+# ---------------------------------------------------------------------------
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $fullName }}-redirect-https
+  labels:
+    {{- include "ui.labels" . | nindent 4 }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+{{- end }}
+{{- if .Values.gatewayAPI.requestBodySize }}
+---
+# ---------------------------------------------------------------------------
+# Request Body Size Limit — Traefik Middleware (replaces proxy-body-size)
+# ---------------------------------------------------------------------------
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $fullName }}-body-size
+  labels:
+    {{- include "ui.labels" . | nindent 4 }}
+spec:
+  buffering:
+    maxRequestBodyBytes: {{ .Values.gatewayAPI.maxRequestBodyBytes | default 8388608 }}
+{{- end }}
+{{- end }}

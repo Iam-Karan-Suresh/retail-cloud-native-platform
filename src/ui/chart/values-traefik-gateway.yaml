@@ -1,0 +1,69 @@
+# =============================================================================
+# Custom values for UI with Traefik Gateway API
+# =============================================================================
+# This file replaces values-nginx-ingress.yaml for Traefik Gateway API routing.
+# Usage: helm install retail-store-ui ./chart -f values-traefik-gateway.yaml
+# =============================================================================
+replicaCount: 1
+
+# Service Account Configuration
+serviceAccount:
+  create: true
+  name: "retail-store-ui-sa"
+
+service:
+  type: ClusterIP
+  port: 80
+
+# NGINX Ingress — DISABLED (replaced by Gateway API)
+ingress:
+  enabled: false
+ingresses: []
+
+# Traefik Gateway API Configuration
+gatewayAPI:
+  enabled: true
+  gatewayClassName: "traefik"
+  hostname: "retail-store.iemafzalhassan.in"
+  requestTimeout: "600s"
+  requestBodySize: true
+  maxRequestBodyBytes: 8388608
+  httpToHttpsRedirect: true
+  tls:
+    enabled: true
+    hostname: "retail-store.iemafzalhassan.in"
+    secretName: "retail-store-tls"
+  certManager:
+    enabled: true
+
+# Application configuration
+app:
+  endpoints:
+    catalog: http://catalog:80
+    carts: http://carts:80
+    checkout: http://checkout:80
+    orders: http://orders:80
+
+# Resources
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 128m
+    memory: 512Mi
+
+# Metrics
+metrics:
+  enabled: true
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/actuator/prometheus"
+
+# Cert Manager Configuration
+certManager:
+  createClusterIssuer: true
+  email: iemafzalhassan@gmail.com
+  clusterIssuerName: "letsencrypt-prod"
+  server: "https://acme-v02.api.letsencrypt.org/directory"
+  privateKeySecretName: "letsencrypt-prod-key"

@@ -1,0 +1,56 @@
+{{- if .Values.gatewayAPI.enabled }}
+# =============================================================================
+# TRAEFIK GATEWAY API — Replaces NGINX Ingress
+# =============================================================================
+# Uses the Kubernetes Gateway API (gateway.networking.k8s.io/v1) with Traefik
+# as the implementation. Gateway API is the successor to Ingress and provides:
+#   - Role-oriented design (infra admin vs app developer)
+#   - Portable across implementations (Traefik, Envoy, etc.)
+#   - Richer routing capabilities (header-based, weighted, etc.)
+# =============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "ui.fullname" . }}-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ui.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.gatewayAPI.certManager.enabled }}
+    cert-manager.io/cluster-issuer: {{ .Values.certManager.clusterIssuerName | default "letsencrypt-prod" }}
+    {{- end }}
+spec:
+  gatewayClassName: {{ .Values.gatewayAPI.gatewayClassName | default "traefik" }}
+  listeners:
+    # ---------------------------------------------------------------------------
+    # HTTP Listener — for direct ELB access (no TLS)
+    # ---------------------------------------------------------------------------
+    - name: http
+      protocol: HTTP
+      port: 80
+      {{- if .Values.gatewayAPI.hostname }}
+      hostname: {{ .Values.gatewayAPI.hostname | quote }}
+      {{- end }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- if .Values.gatewayAPI.tls.enabled }}
+    # ---------------------------------------------------------------------------
+    # HTTPS Listener — for domain-based access with TLS termination
+    # ---------------------------------------------------------------------------
+    - name: https
+      protocol: HTTPS
+      port: 443
+      {{- if .Values.gatewayAPI.tls.hostname }}
+      hostname: {{ .Values.gatewayAPI.tls.hostname | quote }}
+      {{- end }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: {{ .Values.gatewayAPI.tls.secretName | default "tls-secret" }}
+            kind: Secret
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- end }}
+{{- end }}

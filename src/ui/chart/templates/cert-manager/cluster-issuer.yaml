@@ -10,7 +10,18 @@ spec:
     privateKeySecretRef:
       name: {{ .Values.certManager.privateKeySecretName | default (printf "%s-key" (include "ui.fullname" .)) }}
     solvers:
+    {{- if .Values.gatewayAPI.enabled }}
+    # Gateway API solver — uses Traefik gateway for HTTP-01 challenge
+    - http01:
+        gatewayHTTPRoute:
+          parentRefs:
+            - name: {{ include "ui.fullname" . }}-gateway
+              namespace: {{ .Release.Namespace }}
+              kind: Gateway
+    {{- else }}
+    # Legacy Ingress solver (fallback)
     - http01:
         ingress:
           class: {{ .Values.ingress.className | default "nginx" }}
+    {{- end }}
 {{- end }}

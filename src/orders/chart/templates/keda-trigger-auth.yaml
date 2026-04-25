@@ -1,0 +1,19 @@
+{{- if and .Values.keda.enabled .Values.keda.rabbitmq.triggerAuthentication.enabled }}
+# =============================================================================
+# KEDA TriggerAuthentication — RabbitMQ credentials for KEDA scaler
+# =============================================================================
+# Provides KEDA with credentials to connect to RabbitMQ for queue monitoring.
+# References the existing orders-rabbitmq Secret for credential reuse.
+# =============================================================================
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: {{ include "orders.fullname" . }}-rabbitmq-auth
+  labels:
+    {{- include "orders.labels" . | nindent 4 }}
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: {{ .Values.keda.rabbitmq.triggerAuthentication.secretName | default "orders-rabbitmq-keda" }}
+      key: {{ .Values.keda.rabbitmq.triggerAuthentication.secretKey | default "host" }}
+{{- end }}

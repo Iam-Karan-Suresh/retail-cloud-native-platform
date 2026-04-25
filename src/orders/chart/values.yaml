@@ -50,12 +50,61 @@ resources:
   requests:
     cpu: 256m
     memory: 512Mi
+# ---------------------------------------------------------------------------
+# LEGACY HPA AUTOSCALING (DISABLED — replaced by KEDA below)
+# HPA scales on CPU/memory which are LAGGING indicators.
+# ---------------------------------------------------------------------------
 autoscaling:
   enabled: false
   minReplicas: 1
   maxReplicas: 10
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
+
+# =============================================================================
+# KEDA — Event-Driven Autoscaling for RabbitMQ
+# =============================================================================
+# KEDA replaces HPA with queue-depth-driven scaling:
+#   - Scales on RabbitMQ queue depth (LEADING indicator)
+#   - Provisions pods BEFORE CPU spikes, not after
+#   - Can scale to zero when queue is empty → cost savings
+#   - Supports cooldown periods to prevent thrashing
+#   - Native RabbitMQ protocol support (no custom metrics adapter)
+# =============================================================================
+keda:
+  enabled: true
+  minReplicaCount: 2
+  maxReplicaCount: 15
+  cooldownPeriod: 60          # seconds before scaling down
+  pollingInterval: 10         # seconds between queue depth checks
+  # idleReplicaCount: 0       # uncomment for scale-to-zero
+  restoreToOriginalReplicaCount: false
+  # Scale-up behavior — aggressive (react fast to order surges)
+  scaleUp:
+    stabilizationWindowSeconds: 30
+    maxPodsPerInterval: 3
+    periodSeconds: 30
+  # Scale-down behavior — conservative (avoid premature scale-down)
+  scaleDown:
+    stabilizationWindowSeconds: 120
+    maxPodsPerInterval: 1
+    periodSeconds: 60
+  # RabbitMQ trigger configuration
+  rabbitmq:
+    queueName: "orders"
+    host: "amqp://guest:guest@retail-store-orders-rabbitmq:5672/"
+    queueLength: "5"          # scale up when >5 messages per replica
+    protocol: "amqp"
+    mode: "QueueLength"
+    # authenticationRef: ""   # set if using TriggerAuthentication
+    triggerAuthentication:
+      enabled: false
+      secretName: "orders-rabbitmq-keda"
+      secretKey: "host"
+  # Fallback CPU trigger — safety net if RabbitMQ metrics unavailable
+  fallbackCPUTrigger:
+    enabled: true
+    targetUtilization: "70"
 
 # ---------------------------------------------------------------------------
 # SPOT INSTANCE SCHEDULING

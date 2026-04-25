@@ -127,50 +127,50 @@ app:
     openai:
       baseUrl: ""
       # apiKey: ""
-## Ingress for NGINX Ingress Controller
+# ---------------------------------------------------------------------------
+# LEGACY NGINX INGRESS (DISABLED — kept for rollback reference)
+# Replaced by Traefik Gateway API below
+# ---------------------------------------------------------------------------
 ingress:
   enabled: false
   className: "nginx"
-  annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+  annotations: {}
   tls: []
   hosts: []
-ingresses:
-  # Direct ELB access - no host restriction
-  - name: direct
-    className: "nginx"
-    hosts: []
-    annotations:
-      nginx.ingress.kubernetes.io/ssl-redirect: "false"
-      nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
-      nginx.ingress.kubernetes.io/proxy-body-size: "8m"
-      nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
-      nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-      nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
-    tls: []
-  # Domain-based access with SSL
-  - name: domain
-    className: "nginx"
-    hosts:
-      - retail-store.trainwithshubham.com
-    annotations:
-      nginx.ingress.kubernetes.io/ssl-redirect: "true"
-      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-      cert-manager.io/cluster-issuer: "letsencrypt-prod"
-      nginx.ingress.kubernetes.io/proxy-body-size: "8m"
-      nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
-      nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-      nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
-    tls:
-      - secretName: tls-secret
-        hosts:
-          - retail-store.trainwithshubham.com
+ingresses: []
+
+# =============================================================================
+# TRAEFIK GATEWAY API — Replaces NGINX Ingress Controller
+# =============================================================================
+# Gateway API (gateway.networking.k8s.io/v1) is the Kubernetes-native successor
+# to Ingress. Benefits over NGINX Ingress:
+#   1. Role-oriented: infra team owns Gateway, app team owns HTTPRoute
+#   2. Portable: switch providers (Traefik→Envoy) without changing routes
+#   3. Richer: header-based routing, traffic splitting, timeouts built-in
+#   4. Standard: graduated GA in Kubernetes 1.27+
+#
+# Traefik middleware CRDs replace nginx.ingress.kubernetes.io/* annotations
+# =============================================================================
+gatewayAPI:
+  enabled: true
+  gatewayClassName: "traefik"
+  # Hostname for direct ELB access (leave empty for wildcard)
+  hostname: ""
+  # Request timeout (replaces proxy-read/send-timeout annotations)
+  requestTimeout: "600s"
+  # Max request body size in bytes (replaces proxy-body-size: 8m)
+  requestBodySize: true
+  maxRequestBodyBytes: 8388608   # 8 MiB
+  # HTTP → HTTPS redirect (replaces ssl-redirect annotation)
+  httpToHttpsRedirect: false
+  # TLS configuration (replaces ingress.tls + domain ingress)
+  tls:
+    enabled: true
+    hostname: "retail-store.trainwithshubham.com"
+    secretName: "tls-secret"
+  # Cert-manager integration
+  certManager:
+    enabled: true
 
 # Cert Manager Configuration
 certManager:

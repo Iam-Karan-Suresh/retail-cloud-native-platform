@@ -70,6 +70,28 @@ The Infrastructure Architecture follows cloud-native best practices:
 
 ![EKS](docs/images/EKS.gif)
 
+## Workload Placement & Spot Optimization
+
+To maximize cost efficiency while maintaining high availability, this project implements a dual-node strategy using **AWS Spot Instances** and **On-Demand Instances**.
+
+### 🚀 **Spot Instances (Worker Nodes)**
+*Stateless services that can handle interruption.*
+- **UI Service**: Frontend logic (Java)
+- **Catalog/Cart/Orders/Checkout**: Core API services
+- **Workload Protection**: All spot services use Pod Disruption Budgets (PDBs) and Node Termination Handlers (NTH) to ensure graceful draining during spot reclaims.
+
+### 🛡️ **On-Demand Instances (System Nodes)**
+*Critical infrastructure and stateful services.*
+- **Infrastructure Operators**: ArgoCD, Cert-Manager, **Traefik (Gateway API)**, **KEDA (Autoscaler)**.
+- **Stateful Backends**: PostgreSQL, MySQL, Redis, **RabbitMQ**.
+- **Reasoning**: These components are critical for cluster stability or data persistence and must never be interrupted by spot reclaims.
+
+| Component | Node Type | Strategy |
+|-----------|-----------|----------|
+| **Stateless APIs** | **Spot** | Optimized for 70-90% cost savings |
+| **Backing DBs** | **On-Demand** | Data safety and consistency |
+| **Traefik/KEDA** | **On-Demand** | System reliability and routing uptime |
+
 
 
 ## Quick Start
