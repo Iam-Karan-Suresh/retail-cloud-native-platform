@@ -39,7 +39,7 @@ module "eks_addons" {
     namespace   = "monitoring"
   }
 
-  tags = local.tags
+  tags = local.common_tags
 
   depends_on = [module.retail_app_eks]
 }
@@ -54,7 +54,7 @@ module "eks_addons" {
 #   4. Superior observability with built-in dashboard
 #   5. No annotation sprawl — configuration is declarative CRDs
 #
-# Pinned to SYSTEM nodes (On-Demand) — gateway must never be interrupted
+# Pinned to SYSTEM nodes (On-Demand) - gateway must never be interrupted
 # =============================================================================
 resource "helm_release" "traefik" {
   name             = "traefik"
@@ -76,19 +76,19 @@ resource "helm_release" "traefik" {
     value = "false"
   }
 
-  # Service type — LoadBalancer for external traffic
+  # Service type - LoadBalancer for external traffic
   set {
     name  = "service.type"
     value = "LoadBalancer"
   }
 
-  # External traffic policy — preserve client source IP
+  # External traffic policy - preserve client source IP
   set {
     name  = "service.spec.externalTrafficPolicy"
     value = "Local"
   }
 
-  # Pin Traefik to system (on-demand) nodes — must not be interrupted
+  # Pin Traefik to system (on-demand) nodes - must not be interrupted
   set {
     name  = "nodeSelector.role"
     value = "system"

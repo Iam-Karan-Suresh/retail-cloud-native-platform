@@ -20,7 +20,7 @@ resource "helm_release" "node_termination_handler" {
   version    = "0.25.1"
 
   # ---------------------------------------------------------------------------
-  # QUEUE PROCESSOR MODE — reads events from SQS
+  # QUEUE PROCESSOR MODE - reads events from SQS
   # ---------------------------------------------------------------------------
   set {
     name  = "enableSqsTerminationDraining"
@@ -33,7 +33,7 @@ resource "helm_release" "node_termination_handler" {
   }
 
   # ---------------------------------------------------------------------------
-  # SPOT INTERRUPTION DRAINING — handle the 2-minute warning
+  # SPOT INTERRUPTION DRAINING - handle the 2-minute warning
   # ---------------------------------------------------------------------------
   set {
     name  = "enableSpotInterruptionDraining"
@@ -41,7 +41,7 @@ resource "helm_release" "node_termination_handler" {
   }
 
   # ---------------------------------------------------------------------------
-  # REBALANCE MONITORING — proactive rebalance before interruption
+  # REBALANCE MONITORING - proactive rebalance before interruption
   # ---------------------------------------------------------------------------
   set {
     name  = "enableRebalanceMonitoring"
@@ -54,7 +54,7 @@ resource "helm_release" "node_termination_handler" {
   }
 
   # ---------------------------------------------------------------------------
-  # SCHEDULED EVENT DRAINING — handle AWS maintenance events
+  # SCHEDULED EVENT DRAINING - handle AWS maintenance events
   # ---------------------------------------------------------------------------
   set {
     name  = "enableScheduledEventDraining"
@@ -62,7 +62,7 @@ resource "helm_release" "node_termination_handler" {
   }
 
   # ---------------------------------------------------------------------------
-  # IRSA — service account mapped to the IAM role we created
+  # IRSA - service account mapped to the IAM role we created
   # ---------------------------------------------------------------------------
   set {
     name  = "serviceAccount.name"
@@ -75,7 +75,7 @@ resource "helm_release" "node_termination_handler" {
   }
 
   # ---------------------------------------------------------------------------
-  # SCHEDULING — NTH itself MUST run on On-Demand system nodes
+  # SCHEDULING - NTH itself MUST run on On-Demand system nodes
   # If NTH runs on a spot node, it could get killed before it can drain others
   # ---------------------------------------------------------------------------
   set {
@@ -83,7 +83,7 @@ resource "helm_release" "node_termination_handler" {
     value = "system"
   }
 
-  # System nodes have a CriticalAddonsOnly taint — NTH must tolerate it
+  # System nodes have a CriticalAddonsOnly taint - NTH must tolerate it
   set {
     name  = "tolerations[0].key"
     value = "CriticalAddonsOnly"
@@ -100,7 +100,7 @@ resource "helm_release" "node_termination_handler" {
   }
 
   # ---------------------------------------------------------------------------
-  # PROMETHEUS METRICS — expose NTH metrics for alerting
+  # PROMETHEUS METRICS - expose NTH metrics for alerting
   # ---------------------------------------------------------------------------
   set {
     name  = "podAnnotations.prometheus\\.io/scrape"
@@ -113,7 +113,7 @@ resource "helm_release" "node_termination_handler" {
   }
 
   # ---------------------------------------------------------------------------
-  # RESOURCE LIMITS — NTH is lightweight, don't over-provision
+  # RESOURCE LIMITS - NTH is lightweight, don't over-provision
   # ---------------------------------------------------------------------------
   set {
     name  = "resources.requests.cpu"
