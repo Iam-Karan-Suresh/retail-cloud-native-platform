@@ -175,7 +175,7 @@ gatewayAPI:
 # Cert Manager Configuration
 certManager:
   createClusterIssuer: true
-  email: trainwithshubham@gmail.com
+  email: karansuresh.info@gmail.com
   clusterIssuerName: "letsencrypt-prod"
   server: "https://acme-v02.api.letsencrypt.org/directory"
   privateKeySecretName: "letsencrypt-prod-key"
