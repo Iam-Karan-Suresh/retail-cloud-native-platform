@@ -1,0 +1,93 @@
+# =============================================================================
+# PROMETHEUS ALERTING RULES — Spot Interruption Monitoring
+# =============================================================================
+# These rules fire alerts when:
+#   1. A spot node is being drained (warning — expected behavior)
+#   2. Interruption rate is abnormally high (critical — check instance diversity)
+#   3. NTH is not running (critical — you're blind to interruptions)
+#   4. Pod eviction is failing (critical — workloads stuck on dying node)
+# =============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: spot-interruption-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # =========================================================================
+    # SPOT NODE LIFECYCLE ALERTS
+    # =========================================================================
+    - name: spot-interruption
+      rules:
+        # Warning: A spot node is being drained (normal operational event)
+        - alert: SpotNodeDraining
+          expr: increase(aws_node_termination_handler_actions_total{action="cordon-and-drain"}[5m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Spot node {{ $labels.node_name }} is being drained"
+            description: "NTH detected a spot interruption and is draining the node. This is expected behavior."
+            runbook_url: "https://github.com/your-org/runbooks/blob/main/spot-draining.md"
+
+        # Critical: Too many interruptions — you need more instance type diversity
+        - alert: HighSpotInterruptionRate
+          expr: rate(aws_node_termination_handler_actions_total{action="cordon-and-drain"}[15m]) > 0.3
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "High spot interruption rate detected"
+            description: |
+              More than 0.3 interruptions/second over 15 minutes.
+              This indicates your instance type pool lacks diversity.
+              Action: Add more instance families to spot_instance_types variable.
+
+        # Critical: NTH is not running — you're flying blind
+        - alert: NTHNotRunning
+          expr: absent(up{job="aws-node-termination-handler"})
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "AWS Node Termination Handler is DOWN"
+            description: |
+              NTH is not running. Spot interruptions will NOT be handled gracefully.
+              Pods will be hard-killed without draining when spots are reclaimed.
+              This is a P1 incident — restore NTH immediately.
+
+    # =========================================================================
+    # POD SCHEDULING HEALTH
+    # =========================================================================
+    - name: spot-scheduling
+      rules:
+        # Warning: Pods pending for too long — might be capacity issue
+        - alert: PodsPendingOnSpotNodes
+          expr: |
+            count(kube_pod_status_phase{phase="Pending"} == 1) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $value }} pods are stuck in Pending state"
+            description: |
+              Multiple pods are pending. This could mean:
+              1. Not enough spot capacity in your instance type pool
+              2. Resource requests are too high for available instance types
+              3. Node group scaling is too slow
+
+        # Critical: PDB is blocking eviction — drain is stuck
+        - alert: PDBBlockingEviction
+          expr: kube_poddisruptionbudget_status_pod_disruptions_allowed == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PDB {{ $labels.poddisruptionbudget }} is blocking pod evictions"
+            description: |
+              No disruptions are allowed by this PDB, meaning NTH cannot drain
+              pods from a spot node that's about to be reclaimed.
+              Check if enough healthy replicas are running.

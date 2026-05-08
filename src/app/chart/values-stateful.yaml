@@ -1,0 +1,77 @@
+# =============================================================================
+# STATEFUL MODE VALUES OVERRIDE
+# =============================================================================
+# When running with real databases (not in-memory), this overlay:
+#   1. Enables stateful backing services (MySQL, PostgreSQL, Redis, etc.)
+#   2. Pins ALL stateful workloads to On-Demand system nodes
+#   3. Keeps all stateless API services on Spot worker nodes
+#
+# Usage: helm install ... -f values.yaml -f values-stateful.yaml
+# =============================================================================
+
+cart:
+  app:
+    persistence:
+      provider: dynamodb
+  dynamodb:
+    create: true
+    # DynamoDB Local → On-Demand system nodes
+    nodeSelector:
+      role: system
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+
+catalog:
+  app:
+    persistence:
+      provider: 'mysql'
+  mysql:
+    create: true
+    # MySQL → On-Demand system nodes
+    nodeSelector:
+      role: system
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+
+checkout:
+  app:
+    persistence:
+      provider: redis
+  redis:
+    create: true
+    # Redis → On-Demand system nodes
+    nodeSelector:
+      role: system
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+
+orders:
+  app:
+    persistence:
+      provider: 'postgres'
+    messaging:
+      provider: 'rabbitmq'
+  postgresql:
+    create: true
+    # PostgreSQL → On-Demand system nodes
+    nodeSelector:
+      role: system
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule
+  rabbitmq:
+    create: true
+    # RabbitMQ → On-Demand system nodes
+    nodeSelector:
+      role: system
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule

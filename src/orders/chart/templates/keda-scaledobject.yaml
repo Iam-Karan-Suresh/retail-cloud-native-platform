@@ -1,0 +1,92 @@
+{{- if .Values.keda.enabled }}
+# =============================================================================
+# KEDA ScaledObject — RabbitMQ Queue-Driven Autoscaling
+# =============================================================================
+# KEDA (Kubernetes Event-Driven Autoscaling) replaces HPA for the Orders
+# service with a superior scaling model:
+#
+# WHY KEDA > HPA for this workload:
+#   1. HPA scales on CPU/memory — LAGGING indicators (reacts AFTER overload)
+#   2. KEDA scales on queue depth — LEADING indicator (scales BEFORE overload)
+#   3. KEDA can scale to ZERO when no messages → saves cost on spot instances
+#   4. KEDA supports cooldown periods → prevents thrashing during burst traffic
+#   5. KEDA natively understands RabbitMQ protocol → no custom metrics adapter
+#
+# The Orders service consumes from RabbitMQ. When queue depth rises, KEDA
+# provisions new pods PROACTIVELY before CPU spikes.
+# =============================================================================
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "orders.fullname" . }}-keda
+  labels:
+    {{- include "orders.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "orders.fullname" . }}
+  # ---------------------------------------------------------------------------
+  # Scaling boundaries
+  # ---------------------------------------------------------------------------
+  minReplicaCount: {{ .Values.keda.minReplicaCount | default 2 }}
+  maxReplicaCount: {{ .Values.keda.maxReplicaCount | default 15 }}
+  # ---------------------------------------------------------------------------
+  # Cooldown — prevent rapid scale-down thrashing after burst traffic
+  # ---------------------------------------------------------------------------
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod | default 60 }}
+  # ---------------------------------------------------------------------------
+  # Polling interval — how often KEDA checks queue depth
+  # ---------------------------------------------------------------------------
+  pollingInterval: {{ .Values.keda.pollingInterval | default 10 }}
+  {{- if .Values.keda.idleReplicaCount }}
+  # Scale to this count when queue is empty (set to 0 for scale-to-zero)
+  idleReplicaCount: {{ .Values.keda.idleReplicaCount }}
+  {{- end }}
+  # ---------------------------------------------------------------------------
+  # Advanced scaling behavior (replaces HPA behavior stanza)
+  # ---------------------------------------------------------------------------
+  advanced:
+    restoreToOriginalReplicaCount: {{ .Values.keda.restoreToOriginalReplicaCount | default false }}
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: {{ .Values.keda.scaleUp.stabilizationWindowSeconds | default 30 }}
+          policies:
+            - type: Pods
+              value: {{ .Values.keda.scaleUp.maxPodsPerInterval | default 3 }}
+              periodSeconds: {{ .Values.keda.scaleUp.periodSeconds | default 30 }}
+        scaleDown:
+          stabilizationWindowSeconds: {{ .Values.keda.scaleDown.stabilizationWindowSeconds | default 120 }}
+          policies:
+            - type: Pods
+              value: {{ .Values.keda.scaleDown.maxPodsPerInterval | default 1 }}
+              periodSeconds: {{ .Values.keda.scaleDown.periodSeconds | default 60 }}
+  # ---------------------------------------------------------------------------
+  # RabbitMQ Queue Trigger
+  # ---------------------------------------------------------------------------
+  triggers:
+    - type: rabbitmq
+      metadata:
+        # Queue to monitor for scaling decisions
+        queueName: {{ .Values.keda.rabbitmq.queueName | default "orders" }}
+        # Host connection string (AMQP protocol)
+        host: {{ .Values.keda.rabbitmq.host | default "amqp://guest:guest@retail-store-orders-rabbitmq:5672/" }}
+        # Scale up when queue depth exceeds this per replica
+        queueLength: {{ .Values.keda.rabbitmq.queueLength | default "5" | quote }}
+        # Protocol for connecting to RabbitMQ
+        protocol: {{ .Values.keda.rabbitmq.protocol | default "amqp" }}
+        # Scaling mode: QueueLength or MessageRate
+        mode: {{ .Values.keda.rabbitmq.mode | default "QueueLength" }}
+      {{- if .Values.keda.rabbitmq.authenticationRef }}
+      authenticationRef:
+        name: {{ .Values.keda.rabbitmq.authenticationRef }}
+      {{- end }}
+    {{- if .Values.keda.fallbackCPUTrigger.enabled }}
+    # -------------------------------------------------------------------------
+    # Fallback CPU trigger — safety net if RabbitMQ metrics are unavailable
+    # -------------------------------------------------------------------------
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: {{ .Values.keda.fallbackCPUTrigger.targetUtilization | default "70" | quote }}
+    {{- end }}
+{{- end }}

@@ -75,6 +75,7 @@ Create the name of the config map to use
 {{- end }}
 {{- end }}
 
+
 {{/* podAnnotations */}}
 {{- define "ui.podAnnotations" -}}
 {{- if or .Values.metrics.enabled .Values.podAnnotations }}
