@@ -423,15 +423,6 @@ Error: Failed to pull image "123456789012.dkr.ecr.us-west-2.amazonaws.com/retail
 - **Infrastructure issues**: Review Terraform logs
 - **Application issues**: Check ArgoCD UI and kubectl logs
 
-## License
-
-This project is licensed under the Apache License 2.0 - see the [LICENSE](./LICENSE) file for details.
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/iam-Karan-Suresh/retail-store-with-deployments/issues)
-- **Discord**: [TrainWithShubhamCommunity](https://discord.gg/kGEr9mR5gT)
-
 ---
 
 <div align="center">
