@@ -1,4 +1,4 @@
-# Retail Store Sample App - GitOps with Amazon EKS Auto Mode
+# Retail cloud-native-platform - GitOps 
  
 ![Banner](./docs/images/banner.png)
  
