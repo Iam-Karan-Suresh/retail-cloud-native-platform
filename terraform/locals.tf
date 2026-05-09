@@ -4,7 +4,7 @@
 
 # Data sources
 data "aws_availability_zones" "available" {
-  state = "available"
+    state = "available"
 }
 
 data "aws_caller_identity" "current" {}
@@ -32,7 +32,7 @@ locals {
     Environment = var.environment
     Project     = "retail-store"
     ManagedBy   = "terraform"
-    CreatedBy   = "TrainWithShubhamCommunity"
+    CreatedBy   = "Karan_Suresh"
     Owner       = data.aws_caller_identity.current.user_id
     CreatedDate = formatdate("YYYY-MM-DD", timestamp())
   }
