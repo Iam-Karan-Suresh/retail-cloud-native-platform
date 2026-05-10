@@ -1,5 +1,5 @@
 # =============================================================================
-# ARGOCD GITOPS DEPLOYMENT (Open Source CD instead of AWS CodePipeline)
+# ARGOCD GITOPS DEPLOYMENT 
 # =============================================================================
 
 resource "kubernetes_namespace_v1" "argocd" {

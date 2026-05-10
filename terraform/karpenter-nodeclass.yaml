@@ -5,7 +5,7 @@
 # flexible. Karpenter uses this to know:
 #   - Which subnets to launch into (discovered by tag)
 #   - Which security groups to attach (discovered by tag)
-#   - Which AMI to use (AL2, resolved via SSM parameter)
+#   - Which AMI to use (AL2023, resolved via SSM parameter)
 #   - Which instance profile grants the node its IAM permissions
 #
 # IMPORTANT: subnetSelectorTerms and securityGroupSelectorTerms use the
@@ -22,15 +22,16 @@ metadata:
     app.kubernetes.io/part-of: retail-store
 spec:
   # ---------------------------------------------------------------------------
-  # AMI SELECTION — Amazon Linux 2, matching the cluster's K8s version
+  # AMI SELECTION — Amazon Linux 2023, matching the cluster's K8s version
   # ---------------------------------------------------------------------------
-  # Uses the SSM alias to automatically resolve the latest AL2 EKS-optimized
-  # AMI for the cluster's Kubernetes version. This ensures nodes always boot
+  # Uses the SSM alias to automatically resolve the latest AL2023 EKS-optimized
+  # AMI for the cluster's Kubernetes version. AL2023 uses cgroup v2 by default,
+  # which is required for Kubernetes 1.35+. This ensures nodes always boot
   # with a patched, compatible AMI without manual AMI ID management.
   # ---------------------------------------------------------------------------
-  amiFamily: AL2
+  amiFamily: AL2023
   amiSelectorTerms:
-    - alias: al2@latest
+    - alias: al2023@latest
 
   # ---------------------------------------------------------------------------
   # SUBNET DISCOVERY — same private subnets as the existing nodegroup

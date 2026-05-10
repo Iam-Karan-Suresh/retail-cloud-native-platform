@@ -35,7 +35,7 @@ data "aws_iam_instance_profile" "eks_node" {
 
 module "karpenter_irsa" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.0"
+  version = "~> 6.0"
 
   role_name = "${local.cluster_name}-karpenter-controller"
 
@@ -289,7 +289,7 @@ resource "helm_release" "karpenter" {
   name       = "karpenter"
   repository = "oci://public.ecr.aws/karpenter"
   chart      = "karpenter"
-  version    = "1.4.0"
+  version    = "1.12.0"
   namespace  = "kube-system"
 
   # ---------------------------------------------------------------------------

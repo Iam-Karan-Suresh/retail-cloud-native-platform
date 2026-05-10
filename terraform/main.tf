@@ -11,7 +11,7 @@
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 5.0"
+  version = "~> 6.6"
 
   name = "${var.cluster_name}-vpc"
   cidr = var.vpc_cidr
@@ -52,7 +52,7 @@ module "vpc" {
 
 module "retail_app_eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.31"
+  version = "~> 21.20"
 
   # Basic cluster configuration
   cluster_name    = local.cluster_name
@@ -77,7 +77,7 @@ module "retail_app_eks" {
   # NODE GROUP DEFAULTS
   # ---------------------------------------------------------------------------
   eks_managed_node_group_defaults = {
-    ami_type       = "AL2_x86_64"
+    ami_type       = "AL2023_x86_64_STANDARD"
     disk_size      = 20
     instance_types = ["t3.medium", "t3.large"]
 
