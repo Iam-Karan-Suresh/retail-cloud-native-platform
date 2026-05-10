@@ -173,7 +173,7 @@ postgresql:
   image:
     repository: public.ecr.aws/docker/library/postgres
     pullPolicy: IfNotPresent
-    tag: "13"
+    tag: "16"
   service:
     type: ClusterIP
     port: 5432
@@ -204,7 +204,7 @@ rabbitmq:
   image:
     repository: public.ecr.aws/docker/library/rabbitmq
     pullPolicy: IfNotPresent
-    tag: "3.8-management"
+    tag: "4.2-management"
   service:
     type: ClusterIP
     amqp:

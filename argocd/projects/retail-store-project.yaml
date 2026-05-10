@@ -7,7 +7,7 @@ spec:
   description: Retail Store Sample Application
   
   sourceRepos:
-    - 'https://github.com/iam-Karan-Suresh/retail-store-with-deployments'
+    - 'https://github.com/Iam-Karan-Suresh/retail-cloud-native-platform'
   
   destinations:
     - namespace: retail-store
@@ -22,6 +22,8 @@ spec:
       kind: ClusterRoleBinding
     - group: 'cert-manager.io'
       kind: ClusterIssuer
+    - group: 'gateway.networking.k8s.io'
+      kind: GatewayClass
   
   namespaceResourceWhitelist:
     - group: ''
@@ -38,7 +40,17 @@ spec:
       kind: StatefulSet
     - group: 'networking.k8s.io'
       kind: Ingress
+    - group: 'gateway.networking.k8s.io'
+      kind: Gateway
+    - group: 'gateway.networking.k8s.io'
+      kind: HTTPRoute
+    - group: 'traefik.io'
+      kind: Middleware
     - group: 'autoscaling'
       kind: HorizontalPodAutoscaler
+    - group: 'keda.sh'
+      kind: ScaledObject
+    - group: 'keda.sh'
+      kind: TriggerAuthentication
     - group: 'policy'
       kind: PodDisruptionBudget 

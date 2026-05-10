@@ -8,7 +8,7 @@ metadata:
 spec:
   project: retail-store
   source:
-    repoURL: https://github.com/Iam-Karan-Suresh/retail-store-with-deployments
+    repoURL: https://github.com/Iam-Karan-Suresh/retail-cloud-native-platform
     targetRevision: main
     path: src/catalog/chart
     helm:
