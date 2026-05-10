@@ -4,7 +4,7 @@
 
 module "eks_addons" {
   source  = "aws-ia/eks-blueprints-addons/aws"
-  version = "~> 1.0"
+  version = "~> 1.23"
 
   # Cluster information
   cluster_name      = module.retail_app_eks.cluster_name
@@ -60,7 +60,7 @@ resource "helm_release" "traefik" {
   name             = "traefik"
   repository       = "https://traefik.github.io/charts"
   chart            = "traefik"
-  version          = "28.0.0"
+  version          = "40.0.0"
   namespace        = "traefik-system"
   create_namespace = true
 
@@ -165,7 +165,7 @@ resource "helm_release" "keda" {
   name             = "keda"
   repository       = "https://kedacore.github.io/charts"
   chart            = "keda"
-  version          = "2.14.0"
+  version          = "2.19.0"
   namespace        = "keda"
   create_namespace = true
 
