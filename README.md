@@ -17,7 +17,8 @@ A production-grade retail store application deployed on AWS EKS with Karpenter-b
 - [How It Works (The Big Picture)](#how-it-works-the-big-picture)
 - [Application Architecture](#application-architecture)
 - [Infrastructure Architecture](#infrastructure-architecture)
-- [Workload Placement & Spot Optimization](#workload-placement--spot-optimization)
+- [Version Matrix](#version-matrix)
+- [Workload Placement \& Spot Optimization](#workload-placement--spot-optimization)
 - [What Happens When a Spot Instance Gets Reclaimed?](#what-happens-when-a-spot-instance-gets-reclaimed)
 - [Project Structure](#project-structure)
 - [Prerequisites](#prerequisites)
@@ -73,7 +74,7 @@ The application is a retail store with 5 microservices. Each service is independ
 | [Orders](./src/orders/) | Java | Order management API — place/track orders | Karpenter (Spot) |
 | [Checkout](./src/checkout/) | Node.js | Checkout orchestration — coordinates the purchase flow | Karpenter (Spot) |
 
-**Why these run on spot:** All 5 services are **stateless** — they hold no local data. If a node dies, the pods restart on another node and continue serving requests. The databases (MySQL, Redis, RabbitMQ) run on **On-Demand system nodes** where they're never interrupted.
+**Why these run on spot:** All 5 services are **stateless** — they hold no local data. If a node dies, the pods restart on another node and continue serving requests. The databases (MySQL, PostgreSQL, Redis, RabbitMQ) run on **On-Demand system nodes** where they're never interrupted.
 
 ---
 
@@ -120,7 +121,70 @@ The infrastructure follows a **split compute strategy** to balance cost and reli
 | **Traefik instead of NGINX Ingress** | Gateway API is the Kubernetes-native successor to Ingress — portable, role-oriented |
 | **KEDA instead of HPA** | Scales on queue depth (leading indicator) not CPU (lagging indicator) |
 | **ArgoCD instead of CI-driven deploys** | GitOps = declarative, auditable, self-healing deployments |
-| **EventBridge → SQS pipeline** | Decouples AWS events from the consumer — works with both NTH and Karpenter |
+| **EventBridge → SQS pipeline** | Decouples AWS events from the consumer — Karpenter natively polls the queue |
+
+---
+
+## Version Matrix
+
+All infrastructure and Helm chart versions are pinned and tested for compatibility with **Kubernetes 1.35**.
+
+### Terraform Modules
+
+| Component | Module | Version | Purpose |
+|-----------|--------|---------|---------|
+| **VPC** | `terraform-aws-modules/vpc/aws` | `~> 6.6` | VPC with 3-AZ public/private subnets |
+| **EKS** | `terraform-aws-modules/eks/aws` | `~> 21.20` | Managed Kubernetes 1.35 cluster |
+| **IAM (IRSA)** | `terraform-aws-modules/iam/aws` | `~> 6.0` | Service account IAM roles |
+| **Blueprints Addons** | `aws-ia/eks-blueprints-addons/aws` | `~> 1.23` | Cert-Manager, Prometheus stack |
+
+### Terraform Providers
+
+| Provider | Version | Purpose |
+|----------|---------|---------|
+| **AWS** | `>= 6.0` | AWS resource management |
+| **Helm** | `>= 2.17` | Helm chart deployment |
+| **Kubernetes** | `>= 2.35` | Kubernetes resource management |
+
+### Helm Charts (Deployed via Terraform)
+
+| Chart | Repository | Version | Namespace |
+|-------|-----------|---------|-----------|
+| **Traefik** | `traefik.github.io/charts` | `40.0.0` (Traefik v3.7) | `traefik-system` |
+| **Karpenter** | `public.ecr.aws/karpenter` | `1.12.0` | `kube-system` |
+| **KEDA** | `kedacore.github.io/charts` | `2.19.0` | `keda` |
+| **ArgoCD** | `argoproj.github.io/argo-helm` | `9.5.13` | `argocd` |
+| **Cert-Manager** | via EKS Blueprints Addons | latest | `cert-manager` |
+| **Prometheus/Grafana** | via EKS Blueprints Addons | latest | `monitoring` |
+
+### Application Container Images
+
+| Service | Image | Version |
+|---------|-------|---------|
+| **UI** | `public.ecr.aws/aws-containers/retail-store-sample-ui` | `1.2.2` |
+| **Cart** | `public.ecr.aws/aws-containers/retail-store-sample-cart` | `1.2.2` |
+| **Catalog** | `public.ecr.aws/aws-containers/retail-store-sample-catalog` | `1.2.2` |
+| **Orders** | `public.ecr.aws/aws-containers/retail-store-sample-orders` | `1.2.2` |
+| **Checkout** | `public.ecr.aws/aws-containers/retail-store-sample-checkout` | `1.2.2` |
+
+### Backing Service Images (Stateful — On-Demand Nodes)
+
+| Service | Image | Version | Notes |
+|---------|-------|---------|-------|
+| **MySQL** | `public.ecr.aws/docker/library/mysql` | `8.4` | LTS release (8.0 EOL April 2026) |
+| **PostgreSQL** | `public.ecr.aws/docker/library/postgres` | `16` | 5-year support (13 EOL Nov 2025) |
+| **RabbitMQ** | `public.ecr.aws/docker/library/rabbitmq` | `4.2-management` | Current stable (3.8 EOL) |
+| **Redis** | `public.ecr.aws/docker/library/redis` | `8-alpine` | Current stable (6.0 EOL) |
+| **DynamoDB Local** | `public.ecr.aws/aws-dynamodb-local/aws-dynamodb-local` | `3.0.0` | AWS SDK v2 (1.x EOL Jan 2025) |
+
+### Kubernetes API Versions
+
+| API | Version | Status |
+|-----|---------|--------|
+| **Gateway API** | `gateway.networking.k8s.io/v1` | GA (Kubernetes 1.27+) |
+| **Karpenter CRDs** | `karpenter.sh/v1` + `karpenter.k8s.aws/v1` | GA |
+| **KEDA CRDs** | `keda.sh/v1alpha1` | Stable |
+| **Traefik Middleware** | `traefik.io/v1alpha1` | Stable |
 
 ---
 
@@ -205,8 +269,8 @@ retail-cloud-native-platform/
 │   └── projects/                   # ArgoCD AppProject CRDs
 │
 ├── k8s/                            # Additional Kubernetes manifests
-│   ├── monitoring/                 # Monitoring configs (dashboards, alerts)
-│   └── spot-resilience/            # PDBs, topology spread configs
+│   ├── monitoring/                 # Prometheus alerting rules (Karpenter metrics)
+│   └── spot-resilience/            # Service placement matrix documentation
 │
 ├── SPOT-ARCHITECTURE-GUIDE.md      # Deep-dive on spot architecture + interview prep
 ├── migration-guide.md              # General migration documentation
@@ -222,10 +286,10 @@ retail-cloud-native-platform/
 | Tool | Version | Installation |
 |------|---------|-------------|
 | **AWS CLI** | v2+ | [Install Guide](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) |
-| **Terraform** | 1.0+ | [Install Guide](https://developer.hashicorp.com/terraform/install) |
-| **kubectl** | 1.31+ | [Install Guide](https://kubernetes.io/docs/tasks/tools/) |
+| **Terraform** | 1.5.7+ | [Install Guide](https://developer.hashicorp.com/terraform/install) |
+| **kubectl** | 1.35+ | [Install Guide](https://kubernetes.io/docs/tasks/tools/) |
 | **Docker** | 20.0+ | [Install Guide](https://docs.docker.com/get-docker/) |
-| **Helm** | 3.0+ | [Install Guide](https://helm.sh/docs/intro/install/) |
+| **Helm** | 3.14+ | [Install Guide](https://helm.sh/docs/intro/install/) |
 | **Git** | 2.0+ | [Install Guide](https://git-scm.com/downloads) |
 
 <details>
@@ -269,7 +333,7 @@ aws --version && terraform --version && kubectl version --client && docker --ver
 aws configure
 
 # 2. Clone the repo
-git clone https://github.com/iam-Karan-Suresh/retail-cloud-native-platform.git
+git clone https://github.com/Iam-Karan-Suresh/retail-cloud-native-platform.git
 cd retail-cloud-native-platform/terraform
 
 # 3. Phase 1 — Create VPC + EKS cluster (takes ~15 minutes)
@@ -300,7 +364,7 @@ aws configure
 ### Step 2: Clone the Repository
 
 ```bash
-git clone https://github.com/iam-Karan-Suresh/retail-cloud-native-platform.git
+git clone https://github.com/Iam-Karan-Suresh/retail-cloud-native-platform.git
 cd retail-cloud-native-platform/terraform
 ```
 
@@ -315,7 +379,7 @@ terraform apply -target=module.vpc -target=module.retail_app_eks --auto-approve
 
 **What this creates:**
 - VPC with 3 public + 3 private subnets across 3 AZs
-- EKS cluster with managed control plane
+- EKS cluster (Kubernetes 1.35) with managed control plane
 - System node group (On-Demand, 2 nodes)
 - Spot worker node group (for initial bootstrap — Karpenter replaces this)
 
@@ -338,11 +402,11 @@ terraform apply --auto-approve
 ```
 
 **What this deploys:**
-- ✅ **Karpenter** — dynamic spot node provisioning
-- ✅ **Traefik** — Gateway API traffic routing
-- ✅ **ArgoCD** — GitOps continuous delivery
+- ✅ **Karpenter v1.12.0** — dynamic spot node provisioning
+- ✅ **Traefik v40.0.0** — Gateway API traffic routing (Traefik Proxy v3.7)
+- ✅ **ArgoCD v9.5.13** — GitOps continuous delivery
 - ✅ **Prometheus + Grafana** — monitoring & dashboards
-- ✅ **KEDA** — event-driven pod autoscaling
+- ✅ **KEDA v2.19.0** — event-driven pod autoscaling
 - ✅ **Cert-Manager** — TLS certificate management
 - ✅ **EventBridge → SQS** — spot interruption pipeline
 
@@ -371,6 +435,9 @@ kubectl get pods -n traefik-system
 
 # ArgoCD
 kubectl get pods -n argocd
+
+# KEDA
+kubectl get pods -n keda
 
 # Karpenter node claims (if pods are pending)
 kubectl get nodeclaim
@@ -419,8 +486,6 @@ ArgoCD watches the Git repository and automatically syncs Kubernetes manifests:
 |--------|---------|--------|------------|
 | **main** | Simple deployment | Public ECR (v1.2.2) | Manual |
 | **production** | Full CI/CD pipeline | Private ECR (commit hashes) | Automated via GitHub Actions |
-
-For CI/CD setup, see [BRANCHING_STRATEGY.md](./BRANCHING_STRATEGY.md) (if applicable).
 
 ---
 
@@ -520,6 +585,12 @@ kubectl get certificate -A
 #### Image Pull Errors
 - **Public images:** Verify you're on the `main` branch with public ECR images
 - **Private images:** Check GitHub Actions completed successfully, verify ECR permissions
+
+#### MySQL 8.4 Authentication Errors
+After upgrading from MySQL 8.0 to 8.4 LTS, if you see authentication failures:
+- MySQL 8.4 disables `mysql_native_password` by default
+- Applications must use `caching_sha2_password` instead
+- Fix: Update connection strings or re-create users with the new auth plugin
 
 ### Getting Help
 

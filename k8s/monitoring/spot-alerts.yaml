@@ -2,9 +2,9 @@
 # PROMETHEUS ALERTING RULES — Spot Interruption Monitoring
 # =============================================================================
 # These rules fire alerts when:
-#   1. A spot node is being drained (warning — expected behavior)
+#   1. A spot node is being disrupted by Karpenter (warning — expected behavior)
 #   2. Interruption rate is abnormally high (critical — check instance diversity)
-#   3. NTH is not running (critical — you're blind to interruptions)
+#   3. Karpenter controller is not running (critical — cluster can't scale)
 #   4. Pod eviction is failing (critical — workloads stuck on dying node)
 # =============================================================================
 
@@ -22,20 +22,20 @@ spec:
     # =========================================================================
     - name: spot-interruption
       rules:
-        # Warning: A spot node is being drained (normal operational event)
-        - alert: SpotNodeDraining
-          expr: increase(aws_node_termination_handler_actions_total{action="cordon-and-drain"}[5m]) > 0
+        # Warning: A Karpenter node is being disrupted (normal operational event)
+        - alert: KarpenterNodeDisrupting
+          expr: increase(karpenter_nodeclaims_disrupted_total[5m]) > 0
           for: 0m
           labels:
             severity: warning
           annotations:
-            summary: "Spot node {{ $labels.node_name }} is being drained"
-            description: "NTH detected a spot interruption and is draining the node. This is expected behavior."
+            summary: "Karpenter is disrupting a node (consolidation or interruption)"
+            description: "Karpenter detected a disruption event and is replacing a node. This is expected behavior — Karpenter handles spot interruptions and node consolidation automatically."
             runbook_url: "https://github.com/your-org/runbooks/blob/main/spot-draining.md"
 
         # Critical: Too many interruptions — you need more instance type diversity
         - alert: HighSpotInterruptionRate
-          expr: rate(aws_node_termination_handler_actions_total{action="cordon-and-drain"}[15m]) > 0.3
+          expr: rate(karpenter_nodeclaims_disrupted_total{reason="interruption"}[15m]) > 0.3
           for: 5m
           labels:
             severity: critical
@@ -44,20 +44,22 @@ spec:
             description: |
               More than 0.3 interruptions/second over 15 minutes.
               This indicates your instance type pool lacks diversity.
-              Action: Add more instance families to spot_instance_types variable.
+              Action: Add more instance families to the Karpenter NodePool requirements.
 
-        # Critical: NTH is not running — you're flying blind
-        - alert: NTHNotRunning
-          expr: absent(up{job="aws-node-termination-handler"})
+        # Critical: Karpenter controller is not running — cluster can't scale
+        - alert: KarpenterNotRunning
+          expr: absent(up{job="karpenter"})
           for: 2m
           labels:
             severity: critical
           annotations:
-            summary: "AWS Node Termination Handler is DOWN"
+            summary: "Karpenter controller is DOWN"
             description: |
-              NTH is not running. Spot interruptions will NOT be handled gracefully.
-              Pods will be hard-killed without draining when spots are reclaimed.
-              This is a P1 incident — restore NTH immediately.
+              Karpenter is not running. Consequences:
+              - No new nodes will be provisioned for pending pods
+              - Spot interruptions will NOT trigger replacement capacity
+              - Node consolidation is halted
+              This is a P1 incident — restore Karpenter immediately.
 
     # =========================================================================
     # POD SCHEDULING HEALTH
@@ -75,9 +77,10 @@ spec:
             summary: "{{ $value }} pods are stuck in Pending state"
             description: |
               Multiple pods are pending. This could mean:
-              1. Not enough spot capacity in your instance type pool
-              2. Resource requests are too high for available instance types
-              3. Node group scaling is too slow
+              1. Karpenter NodePool resource limits have been reached
+              2. No spot capacity available for the requested instance types
+              3. Resource requests are too high for available instance types
+              4. Karpenter controller may not be running
 
         # Critical: PDB is blocking eviction — drain is stuck
         - alert: PDBBlockingEviction
@@ -88,6 +91,6 @@ spec:
           annotations:
             summary: "PDB {{ $labels.poddisruptionbudget }} is blocking pod evictions"
             description: |
-              No disruptions are allowed by this PDB, meaning NTH cannot drain
-              pods from a spot node that's about to be reclaimed.
+              No disruptions are allowed by this PDB, meaning Karpenter cannot
+              consolidate or drain pods from a node that needs to be replaced.
               Check if enough healthy replicas are running.

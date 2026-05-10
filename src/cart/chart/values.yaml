@@ -105,7 +105,7 @@ dynamodb:
   image:
     repository: public.ecr.aws/aws-dynamodb-local/aws-dynamodb-local
     pullPolicy: IfNotPresent
-    tag: "1.25.1"
+    tag: "3.0.0"
   service:
     type: ClusterIP
     port: 8000
@@ -123,7 +123,7 @@ opentelemetry:
   instrumentation: ""
 
 # ---------------------------------------------------------------------------
-# POD DISRUPTION BUDGET — NTH respects PDBs during spot drain
+# POD DISRUPTION BUDGET — Karpenter respects PDBs during consolidation & spot drain
 # With 3 replicas and minAvailable: 2, only 1 pod can be evicted at a time
 # ---------------------------------------------------------------------------
 podDisruptionBudget:

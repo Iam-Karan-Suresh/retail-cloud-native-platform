@@ -113,7 +113,7 @@ mysql:
   image:
     repository: public.ecr.aws/docker/library/mysql
     pullPolicy: IfNotPresent
-    tag: "8.0"
+    tag: "8.4"
   service:
     type: ClusterIP
     port: 3306
