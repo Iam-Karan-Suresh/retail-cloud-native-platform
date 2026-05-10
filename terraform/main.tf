@@ -11,7 +11,7 @@
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 6.6"
+  version = "~> 5.8"
 
   name = "${var.cluster_name}-vpc"
   cidr = var.vpc_cidr
@@ -52,7 +52,7 @@ module "vpc" {
 
 module "retail_app_eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 21.20"
+  version = "~> 20.24"
 
   # Basic cluster configuration
   cluster_name    = local.cluster_name

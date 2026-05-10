@@ -35,7 +35,7 @@ data "aws_iam_instance_profile" "eks_node" {
 
 module "karpenter_irsa" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 6.0"
+  version = "~> 5.40"
 
   role_name = "${local.cluster_name}-karpenter-controller"
 
