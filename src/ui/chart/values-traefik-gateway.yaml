@@ -21,20 +21,23 @@ ingress:
 ingresses: []
 
 # Traefik Gateway API Configuration
+# NOTE: Set hostname and TLS only when you own a domain with DNS
+# pointing to the ELB. Without a valid domain, leave hostname empty
+# and TLS disabled — the app will be accessible via ELB DNS directly.
 gatewayAPI:
   enabled: true
   gatewayClassName: "traefik"
-  hostname: "retail-store.iemafzalhassan.in"
+  hostname: ""   # Set to your domain, e.g. "retail-store.yourdomain.com"
   requestTimeout: "600s"
   requestBodySize: true
   maxRequestBodyBytes: 8388608
-  httpToHttpsRedirect: true
+  httpToHttpsRedirect: false
   tls:
-    enabled: true
-    hostname: "retail-store.iemafzalhassan.in"
+    enabled: false
+    hostname: ""   # Set to your domain, e.g. "retail-store.yourdomain.com"
     secretName: "retail-store-tls"
   certManager:
-    enabled: true
+    enabled: false
 
 # Application configuration
 app:

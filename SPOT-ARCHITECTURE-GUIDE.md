@@ -6,7 +6,7 @@ This document is designed to serve as both a comprehensive technical guide for t
 
 ## 1. The Elevator Pitch (How to introduce this in an interview)
 
-**"In this project, I engineered a highly resilient, cost-optimized EKS architecture that runs stateless microservices on AWS Spot Instances, achieving up to 80% compute cost reduction without sacrificing uptime. I implemented an event-driven termination pipeline using EventBridge, SQS, and the AWS Node Termination Handler in Queue Processor mode. To ensure zero downtime, I strictly segregated stateful and critical infrastructure to On-Demand nodes using taints and tolerations, while configuring the stateless application layer with topology spread constraints and Pod Disruption Budgets to gracefully handle AWS's 2-minute spot reclamation warnings."**
+**"In this project, I engineered a highly resilient, cost-optimized EKS architecture that runs stateless microservices on AWS Spot Instances, achieving up to 80% compute cost reduction without sacrificing uptime. I implemented Karpenter for intelligent, just-in-time node provisioning with native spot interruption handling via an EventBridge → SQS pipeline. To ensure zero downtime, I strictly segregated stateful and critical infrastructure to On-Demand nodes using taints and tolerations, while configuring the stateless application layer with topology spread constraints and Pod Disruption Budgets. Karpenter picks from 10+ instance families, consolidates underutilized nodes automatically, and handles spot reclaims before they impact running workloads."**
 
 ---
 
@@ -15,31 +15,68 @@ This document is designed to serve as both a comprehensive technical guide for t
 **The Challenge:**
 Running Kubernetes clusters on On-Demand EC2 instances is expensive. Spot instances offer massive discounts (up to 80%), but AWS can pull the plug on them at any time with only a 2-minute warning. If a node is abruptly terminated, the pods running on it are killed instantly, leading to dropped HTTP requests, lost data, and poor user experience. Furthermore, running stateful workloads (like databases) or critical cluster addons (like CoreDNS or Ingress) on Spot instances is catastrophic if the node goes down.
 
-**The Solution:**
-Build a "Zero-Downtime Spot Migration" system that actively listens for AWS termination warnings, intercepts them, and gracefully moves workloads to healthy nodes *before* the hardware is actually reclaimed, while ensuring that databases never land on a Spot instance in the first place.
+**Traditional ASG-Based Approach (What We Replaced):**
+The old approach used fixed Auto Scaling Groups (ASGs) with the AWS Node Termination Handler (NTH) polling an SQS queue. While functional, this had limitations:
+- ASGs are slow to react (launch template changes, ASG warmup delays)
+- Instance type diversity is limited to the ASG's launch template
+- No automatic bin-packing or consolidation — you pay for idle capacity
+- A separate controller (NTH) was needed just for graceful draining
+
+**The Karpenter Solution (Current Architecture):**
+Karpenter replaces both the ASG and NTH with a single controller that:
+- Provisions nodes directly via EC2 RunInstances (no ASG lag)
+- Evaluates 50+ instance type candidates across 10 families and picks the cheapest available spot instance that fits pending pod requirements
+- Natively handles spot interruption events from the same SQS queue
+- Actively consolidates underutilized nodes — replaces them with smaller/fewer ones to maximize bin-packing and minimize cost
 
 ---
 
 ## 3. The Architecture & Event Flow
 
 ### The Infrastructure Split (Compute Strategy)
-We don't just dump everything onto Spot. We split the compute layer into two Managed Node Groups:
 
-1. **`system` (On-Demand):** The bedrock. This node group uses a Kubernetes Taint (`CriticalAddonsOnly=true:NoSchedule`). Only cluster-critical pods (CoreDNS, Ingress, ArgoCD, Prometheus) and **Stateful Databases** (MySQL, PostgreSQL, Redis) are allowed here.
-2. **`spot_workers` (Spot):** The fleet. This group runs on 10 diverse instance types (e.g., t3, t3a, m5, m5a) to reduce the probability of simultaneous interruptions. This is where the stateless microservices (UI, Cart, Catalog, Checkout, Orders) live.
+We don't just dump everything onto Spot. We split the compute layer into two categories:
 
-### The Event-Driven Pipeline (The 2-Minute Drill)
-When AWS decides to take a Spot instance back, the following automated flow happens:
+1. **`system` Node Group (On-Demand, EKS Managed):** The bedrock. This node group uses a Kubernetes Taint (`CriticalAddonsOnly=true:NoSchedule`). Only cluster-critical pods (CoreDNS, Traefik, ArgoCD, Prometheus, Karpenter itself, KEDA) are allowed here. These nodes must **never** be interrupted.
+
+2. **Karpenter-Provisioned Nodes (Spot-Preferred):** The dynamic fleet. Karpenter provisions nodes from 10 diverse instance families (m5, m5a, m5d, m6i, m6a, m4, r5, r6i, c5, c6i) across multiple sizes. This is where stateless microservices (UI, Cart, Catalog, Checkout, Orders) live. Karpenter picks the optimal instance type per workload, preferring spot (weight 80) but falling back to on-demand if spot capacity is unavailable.
+
+### The Event-Driven Pipeline (Spot Interruption Handling)
+
+```
+┌──────────────────────┐     ┌──────────────┐     ┌───────────────────┐
+│   AWS EC2 Service    │     │  EventBridge  │     │    SQS Queue      │
+│                      │────▶│  (4 rules)    │────▶│  (spot-term)      │
+│ • Spot Interruption  │     │               │     │                   │
+│ • Rebalance          │     └──────────────┘     └─────────┬─────────┘
+│ • State Change       │                                     │
+│ • Scheduled Maint.   │                                     ▼
+└──────────────────────┘                          ┌───────────────────┐
+                                                  │    Karpenter      │
+                                                  │  Controller Pod   │
+                                                  │  (On-Demand node) │
+                                                  └─────────┬─────────┘
+                                                            │
+                                                  ┌─────────▼─────────┐
+                                                  │ 1. Cordon node    │
+                                                  │ 2. Launch replace │
+                                                  │ 3. Drain old node │
+                                                  │ 4. Terminate old  │
+                                                  └───────────────────┘
+```
+
+When AWS decides to reclaim a Spot instance:
 
 1. **T-120s (AWS sends the signal):** AWS emits a `Spot Interruption Warning` event to the default EventBridge bus.
 2. **T-119s (EventBridge routing):** EventBridge rules match the event and forward it to a dedicated SQS Queue (`spot-termination`).
-3. **T-118s (NTH Polls SQS):** The AWS Node Termination Handler (NTH) running on our *On-Demand* system nodes is constantly long-polling this SQS queue. It picks up the message.
-4. **T-117s (Cordon):** NTH communicates with the Kubernetes API server and immediately `cordons` the targeted Spot node (marks it as `SchedulingDisabled`).
-5. **T-115s (Drain & Graceful Shutdown):** NTH issues a `drain` command. The Kubernetes scheduler starts evicting pods. The pods receive a `SIGTERM` signal, stop accepting new traffic, finish their current requests, and gracefully shut down.
-6. **T-110s (ASG Replacement):** The underlying Auto Scaling Group notices a node is terminating and provisions a new Spot instance from the diverse instance pool.
-7. **T-80s (Rescheduling):** The evicted pods are rescheduled onto other existing healthy Spot nodes (or the newly booted one).
-8. **T-30s (Lifecycle Hook Complete):** NTH tells the AWS ASG Lifecycle Hook to `CONTINUE`, allowing AWS to finally terminate the EC2 instance.
-9. **T-0s (AWS Reclaims):** AWS terminates the instance. Our workloads were already safely migrated 60 seconds ago. Zero dropped connections.
+3. **T-118s (Karpenter receives it):** The Karpenter controller running on *On-Demand* system nodes is polling this SQS queue via `settings.interruptionQueue`. It picks up the message.
+4. **T-117s (Replacement launched):** Karpenter immediately begins launching a replacement node, picking the optimal instance type from its 50+ candidates based on pending pod requirements and current spot pricing.
+5. **T-115s (Cordon & Drain):** Karpenter cordons the targeted node (marks it as `SchedulingDisabled`) and begins draining pods. Pods receive `SIGTERM`, stop accepting new traffic, finish current requests, and gracefully shut down.
+6. **T-80s (Rescheduling):** Evicted pods are rescheduled onto the replacement node or other healthy nodes. Karpenter's bin-packing ensures efficient placement.
+7. **T-0s (AWS Reclaims):** AWS terminates the instance. Workloads were safely migrated 60+ seconds ago. Zero dropped connections.
+
+### Key Difference from NTH:
+Karpenter doesn't just drain — it **proactively provisions replacement capacity** before the drain completes. With NTH, you had to wait for the ASG to notice the terminated instance, launch a new one, and wait for it to join the cluster. Karpenter eliminates that delay entirely.
 
 ---
 
@@ -47,41 +84,111 @@ When AWS decides to take a Spot instance back, the following automated flow happ
 
 ### A. The AWS Plumbing (Terraform)
 Located in `spot-termination.tf`.
-Instead of relying on the IMDSv1 metadata endpoint (which is a security risk and requires a DaemonSet on every node), we use **Queue Processor Mode**. 
-* We created an **SQS Queue** with long polling (to reduce API costs).
-* We created **EventBridge Rules** catching 4 types of events: Spot Interruptions, Rebalance Recommendations, Instance State Changes, and Scheduled Maintenance.
-* We created **ASG Lifecycle Hooks** to pause the termination of the EC2 instance until NTH finishes its job.
 
-### B. Security (IRSA)
-Located in `irsa.tf`.
-We adhere to the Principle of Least Privilege. The NTH pod needs permission to read SQS and complete ASG lifecycle hooks. Instead of hardcoding AWS access keys, we use **IAM Roles for Service Accounts (IRSA)**. The Kubernetes ServiceAccount is cryptographically tied to an AWS IAM Role via OIDC.
+The EventBridge → SQS pipeline catches spot interruption signals and feeds them to Karpenter:
+* **SQS Queue** with long polling (reduces API costs) and 5-min message retention (events are time-critical)
+* **4 EventBridge Rules** catching: Spot Interruptions, Rebalance Recommendations, Instance State Changes, and Scheduled Maintenance
+* **SQS Queue Policy** allowing EventBridge to push messages
+
+This pipeline was originally built for NTH and is now consumed by Karpenter — no changes were needed to the AWS-side plumbing.
+
+### B. Karpenter Controller (Terraform + Kubernetes)
+Located in `karpenter.tf`, `karpenter-nodeclass.yaml`, `karpenter-nodepool.yaml`.
+
+**IRSA (IAM Role for Service Account):**
+Karpenter's controller pod assumes an AWS IAM role via OIDC federation. This role has least-privilege permissions scoped to:
+- `ec2:RunInstances/TerminateInstances` — launch and kill nodes
+- `ec2:Describe*` — discover instance types, subnets, security groups, AMIs
+- `sqs:ReceiveMessage/DeleteMessage` — consume the interruption queue
+- `iam:PassRole` — scoped to the node instance role only
+- `ssm:GetParameter` — resolve AL2 AMI via SSM alias
+- `eks:DescribeCluster` — discover cluster endpoint and CA
+
+**EC2NodeClass** (`karpenter-nodeclass.yaml`):
+Defines *how* nodes are configured — the "launch template" equivalent:
+- Subnets and security groups discovered by tags (same as existing nodegroup)
+- AMI: Amazon Linux 2 via SSM alias (`al2@latest`)
+- IMDSv2 enforced (security best practice)
+- Encrypted gp3 root volumes
+
+**NodePool** (`karpenter-nodepool.yaml`):
+Defines *what* Karpenter is allowed to provision — the "policy" layer:
+- 10 instance families: m5, m5a, m5d, m6i, m6a, m4, r5, r6i, c5, c6i
+- Capacity preference: spot (weight 80) with on-demand fallback
+- Resource limits: 1000 vCPU, 4000Gi memory across all Karpenter-managed nodes
+- Consolidation: `WhenUnderutilized` with 30s settle time
+- Disruption budget: max 20% of nodes disrupted simultaneously
+- Zero-disruption window: 02:00–04:00 UTC daily (protects batch jobs/ETL)
 
 ### C. The Application Layer Resilience (Helm)
 Spot resilience isn't just an infrastructure problem; the applications must be configured to survive it. For all 5 stateless microservices in `src/`, we configured:
 * **Multiple Replicas:** (e.g., 3 or 4). You cannot survive a node dying if you only have 1 replica.
-* **Topology Spread Constraints:** We force the Kubernetes scheduler to spread the replicas across different Availability Zones (AZs). If an entire AZ runs out of Spot capacity, only 1/3 of our pods are affected.
-* **Pod Disruption Budgets (PDB):** We set `minAvailable: 2`. When NTH tries to drain a node, the PDB prevents Kubernetes from evicting too many pods at once, guaranteeing the service stays online during the migration.
-* **Node Affinity:** A soft preference (`preferredDuringSchedulingIgnoredDuringExecution`) for Spot nodes. If AWS completely runs out of Spot capacity globally, the pods will seamlessly fall back to On-Demand nodes rather than being stuck in a `Pending` state.
+* **Topology Spread Constraints:** Force the Kubernetes scheduler to spread replicas across different Availability Zones (AZs). If an entire AZ runs out of Spot capacity, only 1/3 of pods are affected.
+* **Pod Disruption Budgets (PDB):** Set `minAvailable: 3` (UI) or `minAvailable: 2` (backends). When Karpenter consolidates or drains a node, the PDB prevents too many pods from being evicted at once.
+* **Node Affinity:** A soft preference (`preferredDuringSchedulingIgnoredDuringExecution`) for Spot nodes. If spot capacity is exhausted, pods fall back to On-Demand rather than being stuck in `Pending`.
 
 ---
 
-## 5. Interviewer Q&A: How to Defend This Architecture
+## 5. Karpenter Consolidation — How It Saves Money Automatically
+
+Unlike ASG-based scaling (which only scales on CloudWatch alarms), Karpenter actively watches for waste:
+
+```
+BEFORE consolidation:          AFTER consolidation:
+┌──────────────┐               ┌──────────────┐
+│  m5.xlarge   │               │  m5.large    │
+│  (4 vCPU)    │               │  (2 vCPU)    │
+│  [pod: 0.5]  │               │  [pod: 0.5]  │
+│  [pod: 0.5]  │───────┐      │  [pod: 0.5]  │
+│  idle: 3.0   │       │      │  [pod: 0.5]  │
+└──────────────┘       │      │  [pod: 0.5]  │
+                       │      │  idle: 0.5   │  ← much less waste
+┌──────────────┐       │      └──────────────┘
+│  m5.large    │       │
+│  (2 vCPU)    │       │      Node terminated,
+│  [pod: 0.5]  │───────┘      pods re-packed
+│  idle: 1.5   │
+└──────────────┘
+```
+
+Karpenter detects that two nodes are underutilized, launches one right-sized replacement, moves pods, and terminates the old nodes. This happens automatically every 30 seconds.
+
+---
+
+## 6. Interviewer Q&A: How to Defend This Architecture
 
 If you are explaining this project in an interview, be prepared for these questions:
 
-**Interviewer: "Why did you use SQS and EventBridge (Queue Processor mode) instead of just running NTH as a DaemonSet (IMDS mode)?"**
-> *Your Answer:* "Running NTH as a DaemonSet relies on the EC2 instance metadata service (IMDS). If a node is under heavy CPU load, the DaemonSet might fail to query the metadata in time. Also, IMDS mode only catches Spot interruptions. Queue Processor mode via SQS is much more robust: it runs centrally on the stable On-Demand nodes, handles ASG Lifecycle Hooks, catches Rebalance Recommendations (giving us *more* than 2 minutes warning), and scales better for large clusters without wasting resources on every worker node."
+**Interviewer: "Why did you switch from NTH + ASG to Karpenter?"**
+> *Your Answer:* "NTH is reactive — it waits for AWS to send a 2-minute warning, then drains. ASGs are slow to replace nodes because they go through launch template evaluation, AZ rebalancing, and warmup periods. Karpenter is both proactive and reactive. It consumes the same SQS interruption events, but it also launches replacement capacity *before* the drain completes. Additionally, Karpenter does bin-packing and consolidation — it actively replaces underutilized nodes with right-sized ones. With NTH+ASG, you'd have idle capacity sitting around costing money. Karpenter eliminates that."
+
+**Interviewer: "How does Karpenter pick which instance type to use?"**
+> *Your Answer:* "Karpenter evaluates all allowed instance types (we permit 10 families × multiple sizes = 50+ candidates), checks current spot pricing and availability across all AZs, and picks the cheapest instance that fits the pending pod's resource requests. It uses a concept called 'instance type flexibility' — more candidates means lower interruption rates and better pricing. It also factors in the EC2 fleet API to maximise the chance of getting spot capacity."
 
 **Interviewer: "What happens if you run a database on a Spot instance?"**
 > *Your Answer:* "Absolute disaster. When the Spot instance is reclaimed, the pod is killed. If it's a database like PostgreSQL or MySQL, terminating the process abruptly can corrupt the Write-Ahead Log (WAL), and because the local disk is destroyed, any un-replicated data is permanently lost. That's exactly why I engineered the compute split: I used a Kubernetes Taint (`CriticalAddonsOnly`) on the On-Demand node group and explicitly pinned all stateful workloads (MySQL, Redis, RabbitMQ) to those stable nodes using Tolerations and NodeSelectors. Databases never touch Spot."
 
-**Interviewer: "How do you ensure your application doesn't drop requests during the 2-minute drain window?"**
-> *Your Answer:* "It's a combination of infrastructure and app configuration. First, NTH cordons the node so no *new* traffic is routed to it. Then, Kubernetes sends a `SIGTERM` to the pods. Our deployments are configured with graceful shutdown and readiness probes. The app stops accepting new connections, finishes processing the current HTTP requests, and then exits. Meanwhile, our Pod Disruption Budgets (PDBs) guarantee that a minimum number of replicas remain active across other Availability Zones (enforced by Topology Spread Constraints) to handle the incoming traffic."
+**Interviewer: "How do you ensure your application doesn't drop requests during a spot reclaim?"**
+> *Your Answer:* "It's a combination of Karpenter behavior and app configuration. First, Karpenter launches a replacement node immediately on receiving the interruption signal — so there's capacity ready. Then it cordons the old node and drains pods. Our deployments use graceful shutdown (SIGTERM handling, readiness probes) so the app stops accepting new connections and finishes in-flight requests. Pod Disruption Budgets ensure a minimum number of replicas stay active. Topology Spread Constraints guarantee those remaining replicas are in different AZs. The combination means zero dropped requests."
 
-**Interviewer: "What if AWS completely runs out of Spot capacity in your region?"**
-> *Your Answer:* "Our architecture degrades gracefully. First, we use a diverse pool of 10 different instance types (t3, m5 families) across multiple AZs, which makes a total Spot drought highly unlikely. However, if it does happen, our Helm charts use *soft* Node Affinity (`preferredDuringScheduling...`). The Kubernetes scheduler will try to put the stateless pods on Spot, but if no Spot nodes are available, it will fall back to scheduling them on the On-Demand system nodes. We might pay more temporarily, but the application stays online."
+**Interviewer: "What if AWS completely runs out of Spot capacity?"**
+> *Your Answer:* "Our NodePool allows both spot and on-demand capacity types. Karpenter prefers spot (weight 80) but will fall back to on-demand automatically if spot is unavailable. With 10 instance families across 3 AZs, a total spot drought is extremely unlikely, but the fallback means the application stays online — we just pay more temporarily. We also have resource limits (1000 vCPU / 4000Gi) on the NodePool to prevent runaway scaling in either capacity type."
+
+**Interviewer: "How does consolidation work without disrupting running services?"**
+> *Your Answer:* "Karpenter has disruption budgets. We configured max 20% of nodes to be disrupted simultaneously, and a zero-disruption window between 02:00–04:00 UTC for batch jobs. When consolidating, Karpenter respects PDBs — it won't evict a pod if doing so would violate the budget. It also uses the `consolidateAfter: 30s` setting, meaning a node must be underutilized for at least 30 seconds before Karpenter acts. This prevents thrashing during normal scaling events."
 
 ---
 
-## Summary of Impact
-By implementing this feature, you transformed a standard, fragile Kubernetes deployment into a **Tier-1, Production-Grade architecture**. You demonstrated knowledge of AWS compute economics, event-driven serverless routing (EventBridge/SQS), Kubernetes scheduling primitives (Taints, Tolerations, Affinity, Topology Spread), and Site Reliability Engineering principles (PDBs, Graceful Degradation).
+## 7. Summary of Impact
+
+By implementing this architecture, you transformed a standard, fragile Kubernetes deployment into a **Tier-1, Production-Grade platform**. You demonstrated knowledge of:
+
+| Area | What You Implemented |
+|------|---------------------|
+| **AWS Compute Economics** | Spot instances with 10-family diversity, automatic fallback to on-demand |
+| **Modern Autoscaling** | Karpenter just-in-time provisioning with bin-packing and consolidation |
+| **Event-Driven Architecture** | EventBridge → SQS pipeline for real-time interruption handling |
+| **Kubernetes Scheduling** | Taints, Tolerations, Affinity, Topology Spread Constraints |
+| **SRE Principles** | PDBs, graceful degradation, disruption budgets, zero-disruption windows |
+| **Security** | IRSA (no hardcoded credentials), IMDSv2 enforcement, least-privilege IAM |
+| **Infrastructure as Code** | Terraform for all AWS resources, Helm for Kubernetes deployments |

@@ -164,9 +164,12 @@ gatewayAPI:
   # HTTP → HTTPS redirect (replaces ssl-redirect annotation)
   httpToHttpsRedirect: false
   # TLS configuration (replaces ingress.tls + domain ingress)
+  # NOTE: Enable TLS and set hostname ONLY when you own a domain and have
+  # DNS pointing to the ELB. Without a valid domain, cert-manager ACME
+  # validation will fail and Traefik will reject non-matching hostnames.
   tls:
-    enabled: true
-    hostname: "retail-store.trainwithshubham.com"
+    enabled: false
+    hostname: ""   # Set to your domain, e.g. "retail-store.yourdomain.com"
     secretName: "tls-secret"
   # Cert-manager integration
   certManager:

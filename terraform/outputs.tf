@@ -36,22 +36,22 @@ output "argocd_initial_password_command" {
 }
 
 # ---------------------------------------------------------------------------
-# SPOT TERMINATION HANDLER
+# SPOT TERMINATION / KARPENTER
 # ---------------------------------------------------------------------------
 
 output "spot_termination_sqs_queue_url" {
-  description = "SQS queue URL for spot termination events"
+  description = "SQS queue URL for spot termination events (consumed by Karpenter)"
   value       = aws_sqs_queue.node_termination.url
 }
 
 output "spot_termination_sqs_queue_arn" {
-  description = "SQS queue ARN for spot termination events"
+  description = "SQS queue ARN for spot termination events (consumed by Karpenter)"
   value       = aws_sqs_queue.node_termination.arn
 }
 
-output "nth_iam_role_arn" {
-  description = "IAM role ARN used by Node Termination Handler via IRSA"
-  value       = module.nth_irsa.iam_role_arn
+output "karpenter_iam_role_arn" {
+  description = "IAM role ARN used by Karpenter controller via IRSA"
+  value       = module.karpenter_irsa.iam_role_arn
 }
 
 # ---------------------------------------------------------------------------

@@ -2,15 +2,16 @@
 # SPOT INSTANCE TERMINATION HANDLING — EventBridge → SQS Pipeline
 # =============================================================================
 # This file creates the AWS-side plumbing that catches spot interruption
-# signals and feeds them into SQS for the Node Termination Handler to consume.
+# signals and feeds them into SQS for Karpenter to consume.
 #
 # Flow:
 #   AWS Spot Interruption Warning (2-min)  ──→ EventBridge ──→ SQS
 #   EC2 Rebalance Recommendation           ──→ EventBridge ──→ SQS
-#   ASG Lifecycle (scale-in, AZ rebalance)  ──→ EventBridge ──→ SQS
+#   Instance State Change                  ──→ EventBridge ──→ SQS
 #   Scheduled Change (maintenance)          ──→ EventBridge ──→ SQS
 #
-# NTH pods running in the cluster poll this queue and take action.
+# Karpenter controller polls this queue and handles node replacement.
+# (Previously consumed by NTH — migrated to Karpenter)
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -139,36 +140,15 @@ resource "aws_cloudwatch_event_target" "scheduled_change_to_sqs" {
 }
 
 # -----------------------------------------------------------------------------
-# ASG LIFECYCLE HOOKS — For graceful scale-in and AZ rebalancing
+# ASG LIFECYCLE HOOKS — REMOVED (replaced by Karpenter)
 # -----------------------------------------------------------------------------
-# When the ASG decides to terminate an instance (scale-in, AZ rebalance),
-# this hook pauses the termination for up to 300s, giving NTH time to
-# drain pods before AWS actually kills the instance.
+# The ASG lifecycle hook (aws_autoscaling_lifecycle_hook.spot_termination) and
+# its data source (data.aws_autoscaling_groups.spot_workers) have been removed.
+#
+# Karpenter does not use ASG lifecycle hooks — it directly manages EC2
+# instances and handles interruption events via the SQS queue above.
+#
+# Removed resources:
+#   - data.aws_autoscaling_groups.spot_workers
+#   - aws_autoscaling_lifecycle_hook.spot_termination
 # -----------------------------------------------------------------------------
-
-# Lookup the ASG names created by the EKS module for spot worker nodes
-data "aws_autoscaling_groups" "spot_workers" {
-  filter {
-    name   = "tag:eks:cluster-name"
-    values = [local.cluster_name]
-  }
-
-  filter {
-    name   = "tag:eks:nodegroup-name"
-    values = ["spot_workers"]
-  }
-
-  depends_on = [module.retail_app_eks]
-}
-
-resource "aws_autoscaling_lifecycle_hook" "spot_termination" {
-  count = length(data.aws_autoscaling_groups.spot_workers.names)
-
-  name                   = "${local.cluster_name}-spot-termination-hook"
-  autoscaling_group_name = data.aws_autoscaling_groups.spot_workers.names[count.index]
-  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
-  heartbeat_timeout      = 300 # 5 minutes — NTH will CONTINUE after drain is done
-  default_result         = "CONTINUE"
-
-  depends_on = [module.retail_app_eks]
-}
