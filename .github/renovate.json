@@ -1,3 +1,10 @@
 {
-  "extends": ["config:base"]
+  "extends": [
+    "config:base"
+  ],
+  "timezone": "Asia/Kolkata",
+  "labels": [
+    "dependencies"
+  ],
+  "automerge": false
 }
