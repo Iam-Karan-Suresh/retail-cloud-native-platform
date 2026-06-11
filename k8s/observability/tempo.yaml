@@ -1,26 +1,25 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: prometheus
+  name: tempo
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: prometheus
+      app.kubernetes.io/name: tempo
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/name: tempo
     spec:
       containers:
-        - name: prometheus
-          image: prom/prometheus:v3.9.1
+        - name: tempo
+          image: grafana/tempo:2.10.1
           args:
-            - --config.file=/etc/prometheus/prometheus-config.yaml
-            - --storage.tsdb.path=/prometheus
-            - --storage.tsdb.retention.time=15d
+            - "-config.file=/etc/tempo/tempo.yaml"
+            - "-target=all"
           ports:
-            - containerPort: 9090
+            - containerPort: 3200
           resources:
             requests:
               cpu: 100m
@@ -30,21 +29,21 @@ spec:
               memory: 512Mi
           volumeMounts:
             - name: config
-              mountPath: /etc/prometheus/prometheus-config.yaml
-              subPath: prometheus-config.yaml
+              mountPath: /etc/tempo/tempo.yaml
+              subPath: tempo-config.yaml
       volumes:
         - name: config
           configMap:
-            name: prometheus-config
+            name: tempo-config
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: prometheus
+  name: tempo
 spec:
   selector:
-    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/name: tempo
   ports:
-    - name: prometheus
-      port: 9090
-      targetPort: 9090
+    - name: tempo
+      port: 3200
+      targetPort: 3200
