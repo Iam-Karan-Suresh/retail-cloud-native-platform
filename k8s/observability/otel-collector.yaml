@@ -32,7 +32,7 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/otel-collector-config.yaml
-              subPath: otel-collector-config.yaml
+              subPath: otel-collector.yaml
       volumes:
         - name: config
           configMap:

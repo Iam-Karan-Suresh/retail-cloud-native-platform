@@ -15,7 +15,7 @@ resources:
 configMapGenerator:
   - name: otel-collector-config
     files:
-      - configs/otel-collector-config.yaml
+      - configs/otel-collector.yaml
   - name: prometheus-config
     files:
       - configs/prometheus-config.yaml

@@ -14,11 +14,10 @@
 
 replicaCount: 3
 image:
-  repository: public.ecr.aws/aws-containers/retail-store-sample-checkout
+  repository: ghcr.io/iam-karan-suresh/retail-store-sample-checkout
   pullPolicy: Always
-  tag: "1.2.2"
-imagePullSecrets:
-  - name: regcred
+  tag: "1.3.0"
+imagePullSecrets: []
 nameOverride: ''
 fullnameOverride: ''
 serviceAccount:
@@ -126,13 +125,18 @@ redis:
 securityGroups:
   create: false
   securityGroupIds: []
-opentelemetry:
-  enabled: false
-  instrumentation: ''
 
-# ---------------------------------------------------------------------------
+opentelemetry:
+  enabled: true
+  instrumentation: ""
+  env:
+    OTEL_SERVICE_NAME: checkout
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability.svc.cluster.local:4318
+    OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    OTEL_PROPAGATORS: tracecontext,baggage
+    OTEL_TRACES_SAMPLER: always_on
+
 # POD DISRUPTION BUDGET
-# ---------------------------------------------------------------------------
 podDisruptionBudget:
   enabled: true
   minAvailable: 2

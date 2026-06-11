@@ -15,6 +15,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o main main.go
 
 # ------------------Runtime Stage ----------------
 FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.source=https://github.com/Iam-Karan-Suresh/retail-cloud-native-platform
 
 WORKDIR /app
 # The distroless:nonroot image already runs as user 'nonroot' (uid 65532)

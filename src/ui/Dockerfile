@@ -19,6 +19,7 @@ RUN ./mvnw -DskipTests package -q && \
 
 # ------------------Runtime Stage ----------------
 FROM eclipse-temurin:21-jre-jammy
+LABEL org.opencontainers.image.source=https://github.com/Iam-Karan-Suresh/retail-cloud-native-platform
 
 ENV APPUSER=appuser
 ENV APPUID=1000

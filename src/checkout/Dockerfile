@@ -15,6 +15,7 @@ USER node
 
 # ------------------Runtime Stage ----------------
 FROM node:22-alpine
+LABEL org.opencontainers.image.source=https://github.com/Iam-Karan-Suresh/retail-cloud-native-platform
 
 WORKDIR /app
 

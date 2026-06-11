@@ -58,6 +58,13 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "ui.configMapName" . }}
+          {{- with .Values.opentelemetry.env }}
+          env:
+            {{- range $key, $value := . }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.Version }}"
