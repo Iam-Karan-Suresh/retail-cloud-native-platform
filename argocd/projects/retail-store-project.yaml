@@ -53,4 +53,10 @@ spec:
     - group: 'keda.sh'
       kind: TriggerAuthentication
     - group: 'policy'
-      kind: PodDisruptionBudget 
+      kind: PodDisruptionBudget
+    - group: 'argoproj.io'
+      kind: Rollout
+    - group: 'argoproj.io'
+      kind: AnalysisTemplate
+    - group: 'argoproj.io'
+      kind: AnalysisRun

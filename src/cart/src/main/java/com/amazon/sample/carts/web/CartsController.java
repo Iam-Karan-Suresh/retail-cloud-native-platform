@@ -21,6 +21,8 @@ package com.amazon.sample.carts.web;
 import com.amazon.sample.carts.services.CartService;
 import com.amazon.sample.carts.web.api.Cart;
 import com.amazon.sample.carts.web.api.Item;
+import io.opentelemetry.instrumentation.annotations.WithSpan;
+import io.opentelemetry.instrumentation.annotations.SpanAttribute;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.List;
@@ -55,7 +57,8 @@ public class CartsController {
     produces = MediaType.APPLICATION_JSON_VALUE
   )
   @Operation(summary = "Retrieve a cart", operationId = "getCart")
-  public Cart get(@PathVariable String customerId) {
+  @WithSpan("cart.get")
+  public Cart get(@SpanAttribute("customer.id") @PathVariable String customerId) {
     return Cart.from(this.service.get(customerId));
   }
 
@@ -65,7 +68,8 @@ public class CartsController {
     produces = MediaType.APPLICATION_JSON_VALUE
   )
   @Operation(summary = "Delete a cart", operationId = "deleteCart")
-  public Cart delete(@PathVariable String customerId) {
+  @WithSpan("cart.delete")
+  public Cart delete(@SpanAttribute("customer.id") @PathVariable String customerId) {
     this.service.delete(customerId);
 
     return new Cart();
@@ -116,8 +120,9 @@ public class CartsController {
     produces = MediaType.APPLICATION_JSON_VALUE
   )
   @Operation(summary = "Add an item to a cart", operationId = "addItem")
+  @WithSpan("cart.add_item")
   public Item addToCart(
-    @PathVariable String customerId,
+    @SpanAttribute("customer.id") @PathVariable String customerId,
     @RequestBody Item item
   ) {
     return Item.from(

@@ -35,4 +35,4 @@ springdoc:
   api-docs:
     version: OPENAPI_3_0
 
-otel.sdk.disabled: true
+otel.sdk.disabled: ${OTEL_SDK_DISABLED:true}

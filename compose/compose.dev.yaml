@@ -1,0 +1,169 @@
+# Main Docker Compose file for the Retail Cloud Native Platform and Observability Stack
+#
+# OTel environment variables are set per-service to enable auto + manual instrumentation.
+# All services export traces/metrics/logs via OTLP HTTP to the otel-collector.
+# W3C TraceContext propagation ensures end-to-end distributed traces.
+
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_PROPAGATORS: tracecontext,baggage
+  OTEL_TRACES_SAMPLER: always_on
+  OTEL_LOGS_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+  OTEL_SDK_DISABLED: "false"
+
+services:
+  # Observability Stack
+  prometheus:
+    extends:
+      file: compose.observability.yaml
+      service: prometheus
+    volumes:
+      - ./prometheus-config.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus-data:/prometheus
+
+  loki:
+    extends:
+      file: compose.observability.yaml
+      service: loki
+
+  tempo:
+    extends:
+      file: compose.observability.yaml
+      service: tempo
+
+  grafana:
+    extends:
+      file: compose.observability.yaml
+      service: grafana
+    volumes:
+      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./grafana-dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+  otel-collector:
+    extends:
+      file: compose.observability.yaml
+      service: otel-collector
+    volumes:
+      - ./otel-collector.yaml:/etc/otel-collector-config.yaml:ro
+
+  # Checkout Microservice (Node.js / NestJS)
+  checkout:
+    extends:
+      file: ../src/checkout/docker-compose.yaml
+      service: checkout
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: checkout
+      RETAIL_CHECKOUT_ENDPOINTS_ORDERS: http://orders:8080
+    networks:
+      - app
+
+  checkout-redis:
+    extends:
+      file: ../src/checkout/docker-compose.yaml
+      service: checkout-redis
+    networks:
+      - app
+
+  redis-exporter:
+    extends:
+      file: ../src/checkout/docker-compose.yaml
+      service: redis-exporter
+    networks:
+      - app
+      - observability
+
+  # Cart Microservice (Java / Spring Boot)
+  cart:
+    extends:
+      file: ../src/cart/docker-compose.yaml
+      service: cart
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: cart
+    networks:
+      - app
+
+  carts-db:
+    extends:
+      file: ../src/cart/docker-compose.yaml
+      service: carts-db
+    networks:
+      - app
+
+  # UI Microservice (Java / Spring Boot WebFlux)
+  ui:
+    extends:
+      file: ../src/ui/docker-compose.yaml
+      service: ui
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: ui
+      RETAIL_UI_ENDPOINTS_CATALOG: http://catalog:8080
+      RETAIL_UI_ENDPOINTS_CARTS: http://cart:8080
+      RETAIL_UI_ENDPOINTS_CHECKOUT: http://checkout:8080
+      RETAIL_UI_ENDPOINTS_ORDERS: http://orders:8080
+    networks:
+      - app
+
+  # Catalog Microservice (Go / Gin)
+  catalog:
+    extends:
+      file: ../src/catalog/docker-compose.yaml
+      service: catalog
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: catalog
+    networks:
+      - app
+
+  catalog-db:
+    extends:
+      file: ../src/catalog/docker-compose.yaml
+      service: catalog-db
+    networks:
+      - app
+
+  # Orders Microservice (Java / Spring Boot)
+  orders:
+    extends:
+      file: ../src/orders/docker-compose.yaml
+      service: orders
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: orders
+    networks:
+      - app
+
+  orders-db:
+    extends:
+      file: ../src/orders/docker-compose.yaml
+      service: orders-db
+    networks:
+      - app
+
+  rabbitmq:
+    extends:
+      file: ../src/orders/docker-compose.yaml
+      service: rabbitmq
+    networks:
+      - app
+
+volumes:
+  prometheus-data:
+  loki-data:
+  loki-wal:
+  tempo-data:
+  grafana-data:
+
+networks:
+  observability:
+    driver: bridge
+    name: observability
+  app:
+    driver: bridge
+    name: app

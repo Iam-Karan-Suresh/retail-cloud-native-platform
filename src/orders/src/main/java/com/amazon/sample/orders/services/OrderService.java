@@ -21,6 +21,7 @@ package com.amazon.sample.orders.services;
 import com.amazon.sample.orders.entities.OrderEntity;
 import com.amazon.sample.orders.messaging.OrdersEventHandler;
 import com.amazon.sample.orders.repositories.OrderRepository;
+import io.opentelemetry.instrumentation.annotations.WithSpan;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
@@ -42,6 +43,7 @@ public class OrderService extends AbstractRelationalEventListener<OrderEntity> {
   private OrdersEventHandler eventHandler;
 
   @Transactional
+  @WithSpan("orders.service.create")
   public OrderEntity create(OrderEntity order) {
     System.out.println(order);
 
@@ -50,6 +52,7 @@ public class OrderService extends AbstractRelationalEventListener<OrderEntity> {
     return entity;
   }
 
+  @WithSpan("orders.service.list")
   public List<OrderEntity> list() {
     return StreamSupport.stream(
       this.repository.findAll().spliterator(),

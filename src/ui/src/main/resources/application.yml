@@ -69,4 +69,4 @@ management:
       exposure:
         include: info,health,metrics,prometheus
 
-otel.sdk.disabled: true
+otel.sdk.disabled: ${OTEL_SDK_DISABLED:true}

@@ -15,7 +15,7 @@ COPY ./src ./src
 
 # Compile the project
 RUN ./mvnw -DskipTests package -q && \
-    mv /target/ui-0.0.1-SNAPSHOT.jar app.jar
+    mv target/ui-0.0.1-SNAPSHOT.jar app.jar
 
 # ------------------Runtime Stage ----------------
 FROM eclipse-temurin:21-jre-jammy
