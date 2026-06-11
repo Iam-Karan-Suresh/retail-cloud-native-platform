@@ -26,6 +26,8 @@ import { IShippingService } from './shipping';
 import { ICheckoutRepository } from './repositories';
 import { Item } from './models/Item';
 import { ShippingRates } from './models/ShippingRates';
+import { tracer, setSpanError } from '../tracing';
+import { SpanStatusCode } from '@opentelemetry/api';
 
 @Injectable()
 export class CheckoutService {
@@ -37,88 +39,136 @@ export class CheckoutService {
   ) {}
 
   async get(customerId: string): Promise<Checkout> {
-    const json = await this.checkoutRepository.get(customerId);
+    return tracer.startActiveSpan('checkout.get', async (span) => {
+      try {
+        span.setAttribute('customer.id', customerId);
 
-    if (!json) {
-      return null;
-    }
+        const json = await this.checkoutRepository.get(customerId);
 
-    return deserialize(Checkout, json);
+        if (!json) {
+          span.setAttribute('checkout.found', false);
+          return null;
+        }
+
+        span.setAttribute('checkout.found', true);
+        return deserialize(Checkout, json);
+      } catch (error) {
+        setSpanError(span, error);
+        throw error;
+      } finally {
+        span.end();
+      }
+    });
   }
 
   async update(
     customerId: string,
     request: CheckoutRequest,
   ): Promise<Checkout> {
-    let subtotal = 0;
+    return tracer.startActiveSpan('checkout.update', async (span) => {
+      try {
+        span.setAttribute('customer.id', customerId);
+        span.setAttribute('items.count', request.items.length);
 
-    const items: Item[] = request.items.map((item) => {
-      const totalCost = item.price * item.quantity;
-      subtotal += totalCost;
+        let subtotal = 0;
 
-      return {
-        ...item,
-        totalCost,
-      };
-    });
+        const items: Item[] = request.items.map((item) => {
+          const totalCost = item.price * item.quantity;
+          subtotal += totalCost;
 
-    const tax = request.shippingAddress ? 5 : -1; // Hardcoded $10 tax for now
-    const effectiveTax = tax == -1 ? 0 : tax;
+          return {
+            ...item,
+            totalCost,
+          };
+        });
 
-    let shipping = -1;
-    let shippingRates: ShippingRates = null;
+        span.setAttribute('checkout.subtotal', subtotal);
 
-    if (request.shippingAddress) {
-      shippingRates = await this.shippingService.getShippingRates(request);
+        const tax = request.shippingAddress ? 5 : -1; // Hardcoded $10 tax for now
+        const effectiveTax = tax == -1 ? 0 : tax;
 
-      if (shippingRates) {
-        for (let i = 0; i < shippingRates.rates.length; i++) {
-          if (shippingRates.rates[i].token == request.deliveryOptionToken) {
-            shipping = shippingRates.rates[i].amount;
+        let shipping = -1;
+        let shippingRates: ShippingRates = null;
+
+        if (request.shippingAddress) {
+          shippingRates = await this.shippingService.getShippingRates(request);
+
+          if (shippingRates) {
+            for (let i = 0; i < shippingRates.rates.length; i++) {
+              if (shippingRates.rates[i].token == request.deliveryOptionToken) {
+                shipping = shippingRates.rates[i].amount;
+              }
+            }
           }
         }
+
+        const effectiveShipping = shipping == -1 ? 0 : shipping;
+
+        const checkout: Checkout = {
+          shippingRates,
+          shippingAddress: request.shippingAddress,
+          deliveryOptionToken: request.deliveryOptionToken,
+          items,
+          paymentId: this.makeid(16),
+          paymentToken: this.makeid(32),
+          subtotal,
+          shipping,
+          tax,
+          total: subtotal + effectiveTax + effectiveShipping,
+        };
+
+        span.setAttribute('checkout.total', checkout.total);
+
+        await this.checkoutRepository.set(customerId, serialize(checkout));
+
+        span.setStatus({ code: SpanStatusCode.OK });
+        return checkout;
+      } catch (error) {
+        setSpanError(span, error);
+        throw error;
+      } finally {
+        span.end();
       }
-    }
-
-    const effectiveShipping = shipping == -1 ? 0 : shipping;
-
-    const checkout: Checkout = {
-      shippingRates,
-      shippingAddress: request.shippingAddress,
-      deliveryOptionToken: request.deliveryOptionToken,
-      items,
-      paymentId: this.makeid(16),
-      paymentToken: this.makeid(32),
-      subtotal,
-      shipping,
-      tax,
-      total: subtotal + effectiveTax + effectiveShipping,
-    };
-
-    await this.checkoutRepository.set(customerId, serialize(checkout));
-
-    return checkout;
+    });
   }
 
   async submit(customerId: string): Promise<CheckoutSubmitted> {
-    const checkout = await this.get(customerId);
+    return tracer.startActiveSpan('checkout.submit', async (span) => {
+      try {
+        span.setAttribute('customer.id', customerId);
 
-    if (!checkout) {
-      throw new Error('Checkout not found');
-    }
+        const checkout = await this.get(customerId);
 
-    const order = await this.ordersService.create(checkout);
+        if (!checkout) {
+          span.setAttribute('checkout.found', false);
+          throw new Error('Checkout not found');
+        }
 
-    await this.checkoutRepository.remove(customerId);
+        span.setAttribute('checkout.total', checkout.total);
+        span.setAttribute('checkout.items_count', checkout.items.length);
 
-    return Promise.resolve({
-      orderId: order.id,
-      email: checkout.shippingAddress.email,
-      items: checkout.items,
-      subtotal: checkout.subtotal,
-      shipping: checkout.shipping,
-      tax: checkout.tax,
-      total: checkout.total,
+        const order = await this.ordersService.create(checkout);
+
+        span.setAttribute('order.id', order.id);
+
+        await this.checkoutRepository.remove(customerId);
+
+        span.setStatus({ code: SpanStatusCode.OK });
+        return Promise.resolve({
+          orderId: order.id,
+          email: checkout.shippingAddress.email,
+          items: checkout.items,
+          subtotal: checkout.subtotal,
+          shipping: checkout.shipping,
+          tax: checkout.tax,
+          total: checkout.total,
+        });
+      } catch (error) {
+        setSpanError(span, error);
+        throw error;
+      } finally {
+        span.end();
+      }
     });
   }
 

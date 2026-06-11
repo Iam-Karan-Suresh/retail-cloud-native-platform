@@ -37,16 +37,21 @@ import (
 	"github.com/sethvargo/go-envconfig/pkg/envconfig"
 	ginprometheus "github.com/zsais/go-gin-prometheus"
 
-	"go.opentelemetry.io/contrib/detectors/aws/ec2"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
-	"go.opentelemetry.io/contrib/propagators/aws/xray"
 	"go.opentelemetry.io/otel"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
+
+// Package-level tracer for manual instrumentation
+var tracer oteltrace.Tracer
 
 // @title Catalog API
 // @version 1.0
@@ -64,11 +69,18 @@ func main() {
 	_, otelPresent := os.LookupEnv("OTEL_SERVICE_NAME")
 
 	if otelPresent {
-		_, err := initTracer(ctx)
+		tp, err := initTracer(ctx)
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer func() {
+			if err := tp.Shutdown(ctx); err != nil {
+				log.Printf("Error shutting down tracer provider: %v", err)
+			}
+		}()
 	}
+
+	tracer = otel.Tracer("catalog")
 
 	var config config.AppConfiguration
 	if err := envconfig.Process(ctx, &config); err != nil {
@@ -105,13 +117,33 @@ func main() {
 	catalog := r.Group("/catalog")
 
 	catalog.Use(chaosController.ChaosMiddleware())
-	catalog.Use(otelgin.Middleware("catalog-server"))
+	catalog.Use(otelgin.Middleware("catalog"))
 
-	catalog.GET("/products", c.GetProducts)
+	catalog.GET("/products", func(ctx *gin.Context) {
+		_, span := tracer.Start(ctx.Request.Context(), "catalog.get_products",
+			oteltrace.WithAttributes(
+				attribute.String("catalog.tags", ctx.Query("tags")),
+				attribute.String("catalog.order", ctx.Query("order")),
+				attribute.String("catalog.page", ctx.DefaultQuery("page", "1")),
+				attribute.String("catalog.size", ctx.DefaultQuery("size", "10")),
+			),
+		)
+		defer span.End()
+		c.GetProducts(ctx)
+	})
 
 	catalog.GET("/size", c.CatalogSize)
 	catalog.GET("/tags", c.ListTags)
-	catalog.GET("/products/:id", c.GetProduct)
+
+	catalog.GET("/products/:id", func(ctx *gin.Context) {
+		_, span := tracer.Start(ctx.Request.Context(), "catalog.get_product",
+			oteltrace.WithAttributes(
+				attribute.String("product.id", ctx.Param("id")),
+			),
+		)
+		defer span.End()
+		c.GetProduct(ctx)
+	})
 
 	r.GET("/health", func(c *gin.Context) {
 		if !chaosController.IsHealthy() {
@@ -175,15 +207,35 @@ func initTracer(ctx context.Context) (*sdktrace.TracerProvider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating OTLP trace exporter: %w", err)
 	}
-	idg := xray.NewIDGenerator()
-	ec2ResourceDetector := ec2.NewResourceDetector()
-	resource, _ := ec2ResourceDetector.Detect(context.Background())
+
+	serviceName := os.Getenv("OTEL_SERVICE_NAME")
+	if serviceName == "" {
+		serviceName = "catalog"
+	}
+
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(
+			resource.Default().SchemaURL(),
+			semconv.ServiceName(serviceName),
+			semconv.ServiceVersion("1.0.0"),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating resource: %w", err)
+	}
+
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithIDGenerator(idg),
-		sdktrace.WithResource(resource),
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 	)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+
+	// Use W3C TraceContext propagation (compatible with Tempo, Grafana, and all OTel SDKs)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
 	otel.SetTracerProvider(tp)
 	return tp, nil
 }

@@ -22,6 +22,8 @@ import com.amazon.sample.orders.services.OrderService;
 import com.amazon.sample.orders.web.payload.ExistingOrder;
 import com.amazon.sample.orders.web.payload.Order;
 import com.amazon.sample.orders.web.payload.OrderMapper;
+import io.opentelemetry.instrumentation.annotations.WithSpan;
+import io.opentelemetry.instrumentation.annotations.SpanAttribute;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.List;
@@ -48,6 +50,7 @@ public class OrderController {
 
   @PostMapping(produces = { "application/json" })
   @Operation(summary = "Create an order", operationId = "createOrder")
+  @WithSpan("orders.create")
   public ExistingOrder order(@RequestBody Order orderRequest) {
     log.debug("Creating order {}", orderRequest);
 
@@ -58,6 +61,7 @@ public class OrderController {
 
   @GetMapping(produces = { "application/json" })
   @Operation(summary = "List orders", operationId = "listOrders")
+  @WithSpan("orders.list")
   public List<ExistingOrder> order() {
     return this.service.list()
       .stream()

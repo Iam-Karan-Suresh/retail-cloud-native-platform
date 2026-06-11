@@ -16,4 +16,4 @@ retail:
         create-table: false
         table-name: Items
 
-otel.sdk.disabled: true
+otel.sdk.disabled: ${OTEL_SDK_DISABLED:true}
