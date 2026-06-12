@@ -10,6 +10,7 @@ distributor:
         http:
           endpoint: 0.0.0.0:4318
 
+# Consolidated storage layout to ensure ingester, compactor, and querier read from the same pool
 storage:
   trace:
     backend: local
@@ -26,7 +27,7 @@ metrics_generator:
     path: /var/tempo/generator/wal
     remote_write:
       - url: http://prometheus:9090/api/v1/write
-        send_exemplars: true
+        send_exemplars: true # Remember to add '--enable-feature=remote-write-receiver' to Prometheus!
   traces_storage:
     path: /var/tempo/generator/traces
   processor:
@@ -45,3 +46,14 @@ overrides:
       processors:
         - service-graphs
         - span-metrics
+
+query_frontend:
+  search:
+    max_duration: 0s
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 72h
