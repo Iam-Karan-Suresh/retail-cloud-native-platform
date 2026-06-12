@@ -19,6 +19,10 @@ spec:
             - --config.file=/etc/prometheus/prometheus-config.yaml
             - --storage.tsdb.path=/prometheus
             - --storage.tsdb.retention.time=15d
+            # Allow Tempo to push metrics
+            - --web.enable-remote-write-receiver
+            # Store exemplars (TraceID links)
+            - --enable-feature=exemplar-storage
           ports:
             - containerPort: 9090
           resources:
