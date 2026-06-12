@@ -12,18 +12,18 @@ The foundation is a **Multi-AZ VPC** across 3 Availability Zones to ensure regio
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                         VPC (10.0.0.0/16)                                │
 │                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐          │
-│  │  Public Subnet   │  │  Public Subnet   │  │  Public Subnet   │         │
-│  │  AZ-a            │  │  AZ-b            │  │  AZ-c            │         │
-│  │  [NLB] [NAT GW]  │  │  [NLB] [NAT GW]  │  │  [NLB] [NAT GW]  │         │
-│  └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘         │
-│           │                     │                     │                   │
-│  ┌────────▼─────────┐  ┌────────▼─────────┐  ┌────────▼─────────┐         │
-│  │  Private Subnet   │  │  Private Subnet   │  │  Private Subnet   │        │
-│  │  AZ-a             │  │  AZ-b             │  │  AZ-c             │        │
-│  │  [System Nodes]   │  │  [Karpenter Nodes]│  │  [Karpenter Nodes]│        │
-│  │  [Karpenter Nodes]│  │                   │  │                   │        │
-│  └──────────────────┘  └──────────────────┘  └──────────────────┘         │
+│  ┌─────────────────┐   ┌─────────────────┐  ┌─────────────────┐          │
+│  │  Public Subnet   │  │  Public Subnet  │  │  Public Subnet  │          │
+│  │  AZ-a            │  │  AZ-b           │  │  AZ-c           │          │
+│  │  [NLB] [NAT GW]  │  │  [NLB] [NAT GW] │  │  [NLB] [NAT GW] │          │
+│  └────────┬─────────┘  └────────┬────────┘  └────────┬────────┘          │
+│           │                     │                     │                  │
+│  ┌────────▼─────────┐   ┌────────▼─────────┐  ┌────────▼─────────┐       │
+│  │  Private Subnet  │   │  Private Subnet  │  │  Private Subnet  │       │
+│  │  AZ-a            │   │  AZ-b            │  │  AZ-c            │       │
+│  │ [System Nodes]   │   │  [System Nodes]  │  │  [System Nodes]  │       │
+│  │ [Karpenter Nodes]│   │ [Karpenter Nodes]│  │ [Karpenter Nodes]│       │
+│  └──────────────────┘   └──────────────────┘  └──────────────────┘       │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
