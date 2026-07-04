@@ -120,11 +120,6 @@ output "karpenter_iam_role_arn" {
 # NETWORKING
 # ---------------------------------------------------------------------------
 
-output "vpc_id" {
-  description = "VPC ID"
-  value       = module.vpc.vpc_id
-}
-
 output "private_subnet_ids" {
   description = "Private subnet IDs where worker nodes run"
   value       = module.vpc.private_subnets
