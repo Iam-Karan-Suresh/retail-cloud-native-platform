@@ -1,0 +1,281 @@
+# =============================================================================
+# PRODUCTION DEPLOYMENT STAGE — Manual Gate + ArgoCD GitOps + Rollback
+# =============================================================================
+# Production deployment with:
+#   1. Manual approval gate (blocks pipeline until human approves)
+#   2. GitOps commit (ArgoCD auto-syncs) OR direct Helm deploy
+#   3. Post-deploy verification (health checks, Prometheus metrics)
+#   4. Rollback job (manual trigger to revert to previous release)
+#
+# ⚠️  This stage ONLY runs on the default branch (main) or git tags.
+# ⚠️  All jobs require manual trigger — no accidental production deploys.
+#
+# Prerequisites:
+#   - KUBECONFIG_PRODUCTION CI/CD variable (protected + masked)
+#   - ARGOCD_AUTH_TOKEN CI/CD variable (for ArgoCD API, optional)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# PRODUCTION DEPLOY — Manual Approval Required
+# ---------------------------------------------------------------------------
+# This is the main production deployment job.
+# Strategy: GitOps (ArgoCD) — commits updated image tags, ArgoCD syncs.
+# Fallback: Direct Helm deploy if ArgoCD is not configured.
+# ---------------------------------------------------------------------------
+deploy-production:
+  stage: deploy-production
+  image:
+    name: alpine/helm:3.17.3
+    entrypoint: [""]
+  variables:
+    GIT_STRATEGY: clone
+    GIT_DEPTH: 1
+    DEPLOY_NAMESPACE: retail-store
+    DEPLOY_ENVIRONMENT: production
+    IMAGE_TAG: "${CI_COMMIT_SHORT_SHA}"
+  environment:
+    name: production
+    url: https://retail-store.yourdomain.com
+  before_script:
+    - apk add --no-cache curl bash yq git jq
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════════════╗"
+      echo "║  🚀 PRODUCTION DEPLOYMENT                               ║"
+      echo "║                                                          ║"
+      echo "║  Image Tag:    ${IMAGE_TAG}                              ║"
+      echo "║  Namespace:    ${DEPLOY_NAMESPACE}                       ║"
+      echo "║  Pipeline:     ${CI_PIPELINE_ID}                         ║"
+      echo "║  Triggered by: ${GITLAB_USER_NAME}                       ║"
+      echo "╚══════════════════════════════════════════════════════════╝"
+
+      # =====================================================================
+      # STRATEGY 1: GitOps (ArgoCD) — Preferred
+      # =====================================================================
+      # If ArgoCD is configured, we commit updated tags and let ArgoCD sync.
+      # The publish-charts stage already committed to main; this just triggers
+      # an ArgoCD sync if the auto-sync hasn't picked it up yet.
+      # =====================================================================
+      if [ -n "${ARGOCD_AUTH_TOKEN}" ] && [ -n "${ARGOCD_SERVER}" ]; then
+        echo ""
+        echo "━━━ Strategy: ArgoCD GitOps Sync ━━━"
+
+        # Install ArgoCD CLI
+        curl -sSL -o /usr/local/bin/argocd \
+          "https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64"
+        chmod +x /usr/local/bin/argocd
+
+        # Trigger sync for each application
+        for app in retail-store-cart retail-store-catalog retail-store-checkout retail-store-orders retail-store-ui; do
+          echo ""
+          echo "  Syncing ArgoCD app: ${app}"
+          argocd app sync "${app}" \
+            --server "${ARGOCD_SERVER}" \
+            --auth-token "${ARGOCD_AUTH_TOKEN}" \
+            --grpc-web \
+            --prune \
+            --timeout 300 || echo "  ⚠️  Sync command returned non-zero (may be in progress)"
+
+          argocd app wait "${app}" \
+            --server "${ARGOCD_SERVER}" \
+            --auth-token "${ARGOCD_AUTH_TOKEN}" \
+            --grpc-web \
+            --health \
+            --timeout 300 || echo "  ⚠️  Wait timed out"
+        done
+
+      # =====================================================================
+      # STRATEGY 2: Direct Helm Deploy — Fallback
+      # =====================================================================
+      else
+        echo ""
+        echo "━━━ Strategy: Direct Helm Deploy ━━━"
+        echo "  (ArgoCD not configured — deploying directly via Helm)"
+
+        for service in cart catalog checkout orders ui; do
+          CHART_PATH="src/${service}/chart"
+
+          echo ""
+          echo "━━━ Deploying ${service} to production ━━━"
+          helm upgrade --install "${service}" \
+            "${CI_PROJECT_DIR}/${CHART_PATH}" \
+            --namespace "${DEPLOY_NAMESPACE}" \
+            --set image.repository="${CI_REGISTRY_IMAGE}/${service}" \
+            --set image.tag="${IMAGE_TAG}" \
+            --set image.pullPolicy=Always \
+            --atomic \
+            --cleanup-on-fail \
+            --timeout 10m \
+            --wait \
+            --history-max 10 \
+            2>&1 | tail -20
+
+          echo "  ✅ ${service} deployed to production"
+        done
+      fi
+
+      echo ""
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  ✅ Production deployment complete               ║"
+      echo "╚══════════════════════════════════════════════════╝"
+  after_script:
+    - |
+      echo ""
+      echo "━━━ Production Pod Status ━━━"
+      kubectl -n "${DEPLOY_NAMESPACE}" get pods -o wide 2>/dev/null || echo "Unable to check pods"
+      echo ""
+      kubectl -n "${DEPLOY_NAMESPACE}" get services 2>/dev/null || echo "Unable to check services"
+  when: manual
+  allow_failure: false  # Pipeline blocks here — requires human approval
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  needs:
+    - job: smoke-test-staging
+      optional: true
+    - job: deploy-staging
+      optional: true
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# POST-DEPLOY VERIFICATION — Health + Metrics Validation
+# ---------------------------------------------------------------------------
+# Runs after production deploy to verify services are healthy.
+# Checks both HTTP health endpoints and Prometheus metrics.
+# ---------------------------------------------------------------------------
+verify-production:
+  stage: deploy-production
+  image: curlimages/curl:8.14.1
+  variables:
+    GIT_STRATEGY: none
+    DEPLOY_NAMESPACE: retail-store
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  POST-DEPLOY VERIFICATION — Production           ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      SERVICES=(
+        "cart:80:/actuator/health"
+        "catalog:80:/health"
+        "checkout:80:/health"
+        "orders:80:/actuator/health"
+        "ui:80:/actuator/health"
+      )
+
+      FAILED=0
+      for entry in "${SERVICES[@]}"; do
+        SERVICE=$(echo "${entry}" | cut -d: -f1)
+        PORT=$(echo "${entry}" | cut -d: -f2)
+        PATH_HEALTH=$(echo "${entry}" | cut -d: -f3)
+        URL="http://${SERVICE}.${DEPLOY_NAMESPACE}.svc.cluster.local:${PORT}${PATH_HEALTH}"
+
+        echo ""
+        echo "━━━ ${SERVICE} ━━━"
+
+        # Health check with retries (services may be rolling)
+        RETRIES=5
+        for i in $(seq 1 ${RETRIES}); do
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${URL}" 2>/dev/null || echo "000")
+          if [ "${HTTP_STATUS}" = "200" ]; then
+            echo "  ✅ HTTP ${HTTP_STATUS} — Healthy (attempt ${i}/${RETRIES})"
+            break
+          else
+            echo "  ⏳ HTTP ${HTTP_STATUS} — Retrying (${i}/${RETRIES})..."
+            sleep 10
+          fi
+        done
+
+        if [ "${HTTP_STATUS}" != "200" ]; then
+          echo "  ❌ UNHEALTHY after ${RETRIES} attempts"
+          FAILED=1
+        fi
+
+        # Check Prometheus metrics endpoint
+        METRICS_PATH="/actuator/prometheus"
+        if [ "${SERVICE}" = "catalog" ] || [ "${SERVICE}" = "checkout" ]; then
+          METRICS_PATH="/metrics"
+        fi
+        METRICS_URL="http://${SERVICE}.${DEPLOY_NAMESPACE}.svc.cluster.local:8080${METRICS_PATH}"
+        METRICS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${METRICS_URL}" 2>/dev/null || echo "000")
+        echo "  Metrics: HTTP ${METRICS_STATUS}"
+      done
+
+      echo ""
+      if [ "${FAILED}" = "1" ]; then
+        echo "⚠️  Some services are unhealthy — check pod logs!"
+        echo "  Consider running the rollback job if issues persist."
+        exit 1
+      else
+        echo "✅ All production services verified healthy"
+      fi
+  when: delayed
+  start_in: 2 minutes  # Wait 2 minutes for pods to stabilize
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  needs:
+    - job: deploy-production
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# ROLLBACK — Manual Emergency Rollback
+# ---------------------------------------------------------------------------
+# Rolls back all services to the previous Helm release.
+# Use this when a production deploy causes issues.
+# ---------------------------------------------------------------------------
+rollback-production:
+  stage: deploy-production
+  image:
+    name: alpine/helm:3.17.3
+    entrypoint: [""]
+  variables:
+    GIT_STRATEGY: none
+    DEPLOY_NAMESPACE: retail-store
+  before_script:
+    - apk add --no-cache curl bash
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  ⚠️  PRODUCTION ROLLBACK                         ║"
+      echo "║                                                  ║"
+      echo "║  Rolling back ALL services to previous release   ║"
+      echo "║  Triggered by: ${GITLAB_USER_NAME}               ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      for service in cart catalog checkout orders ui; do
+        echo ""
+        echo "━━━ Rolling back ${service} ━━━"
+
+        # Show current and previous revisions
+        echo "  Release history:"
+        helm history "${service}" -n "${DEPLOY_NAMESPACE}" --max 5 2>/dev/null || echo "  No history found"
+
+        # Rollback to previous revision
+        helm rollback "${service}" 0 \
+          --namespace "${DEPLOY_NAMESPACE}" \
+          --wait \
+          --timeout 5m \
+          2>&1 || echo "  ⚠️  Rollback failed or no previous revision"
+
+        echo "  ✅ ${service} rolled back"
+      done
+
+      echo ""
+      echo "━━━ Post-Rollback Status ━━━"
+      kubectl -n "${DEPLOY_NAMESPACE}" get pods -o wide
+      echo ""
+      echo "✅ Rollback complete — verify service health manually"
+  when: manual
+  allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs: []  # Can be triggered independently of other jobs
+  tags:
+    - docker

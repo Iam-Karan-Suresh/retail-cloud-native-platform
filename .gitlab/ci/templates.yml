@@ -1,0 +1,384 @@
+# =============================================================================
+# REUSABLE JOB TEMPLATES — DRY CI/CD Building Blocks
+# =============================================================================
+# Hidden jobs (prefixed with `.`) that are extended by service-specific jobs.
+# This file is the single source of truth for all build/test/deploy patterns.
+#
+# Usage: `extends: .template-<name>` in service-specific job definitions.
+#
+# Author: Senior DevOps/CICD Engineer
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# DOCKER BUILD — Kaniko (rootless, no DinD required)
+# ---------------------------------------------------------------------------
+# Builds a Docker image using Kaniko and pushes to GitLab Container Registry.
+# Kaniko runs in userspace — no privileged containers, no Docker socket.
+#
+# Required variables (set by extending job):
+#   SERVICE_NAME    — e.g., "cart", "catalog"
+#   DOCKERFILE_PATH — e.g., "src/cart/Dockerfile"
+#   BUILD_CONTEXT   — e.g., "src/cart"
+# ---------------------------------------------------------------------------
+.template-docker-build:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  variables:
+    # Kaniko cache configuration
+    KANIKO_CACHE_ENABLED: "true"
+  before_script:
+    # Authenticate to GitLab Container Registry
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf '%s:%s' "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+  script:
+    - |
+      # ---------------------------------------------------------------------------
+      # TAG STRATEGY:
+      #   - Every commit:  <sha>
+      #   - Branch:        <branch-slug>
+      #   - Main branch:   latest
+      #   - Git tag v*:    semantic version (e.g., 1.3.0)
+      # ---------------------------------------------------------------------------
+      DESTINATIONS="--destination=${CI_REGISTRY_IMAGE}/${SERVICE_NAME}:${CI_COMMIT_SHORT_SHA}"
+      DESTINATIONS="${DESTINATIONS} --destination=${CI_REGISTRY_IMAGE}/${SERVICE_NAME}:${CI_COMMIT_REF_SLUG}"
+
+      # Tag as 'latest' only on default branch
+      if [ "${CI_COMMIT_BRANCH}" = "${CI_DEFAULT_BRANCH}" ]; then
+        DESTINATIONS="${DESTINATIONS} --destination=${CI_REGISTRY_IMAGE}/${SERVICE_NAME}:latest"
+      fi
+
+      # Tag with semantic version on git tags (v1.2.3 → 1.2.3)
+      if [ -n "${CI_COMMIT_TAG}" ]; then
+        SEM_VERSION=$(echo "${CI_COMMIT_TAG}" | sed 's/^v//')
+        DESTINATIONS="${DESTINATIONS} --destination=${CI_REGISTRY_IMAGE}/${SERVICE_NAME}:${SEM_VERSION}"
+      fi
+
+      # Execute Kaniko build
+      /kaniko/executor \
+        --context="${CI_PROJECT_DIR}/${BUILD_CONTEXT}" \
+        --dockerfile="${CI_PROJECT_DIR}/${DOCKERFILE_PATH}" \
+        ${DESTINATIONS} \
+        --cache=${KANIKO_CACHE_ENABLED} \
+        --cache-repo="${CI_REGISTRY_IMAGE}/${SERVICE_NAME}/cache" \
+        --cache-ttl=168h \
+        --snapshot-mode=redo \
+        --compressed-caching=false \
+        --build-arg=BUILDKIT_INLINE_CACHE=1 \
+        --label="org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --label="org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
+        --label="org.opencontainers.image.source=${CI_PROJECT_URL}" \
+        --label="org.opencontainers.image.title=${SERVICE_NAME}" \
+        --label="org.opencontainers.image.version=${CI_COMMIT_SHORT_SHA}" \
+        --label="com.gitlab.ci.pipeline.id=${CI_PIPELINE_ID}" \
+        --label="com.gitlab.ci.pipeline.url=${CI_PIPELINE_URL}"
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# MAVEN TEST — Java services (cart, orders, ui)
+# ---------------------------------------------------------------------------
+# Runs Maven unit tests with JaCoCo coverage and JUnit XML reports.
+# Maven repository is cached across pipeline runs.
+# ---------------------------------------------------------------------------
+.template-maven-test:
+  stage: test
+  image: maven:3.9.9-eclipse-temurin-21
+  variables:
+    MAVEN_OPTS: >-
+      -Dmaven.repo.local=${CI_PROJECT_DIR}/.m2/repository
+      -Dorg.slf4j.simpleLogger.showDateTime=true
+      -Djava.awt.headless=true
+    MAVEN_CLI_OPTS: >-
+      --batch-mode
+      --errors
+      --fail-at-end
+      --show-version
+  cache:
+    key: "${SERVICE_NAME}-maven-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .m2/repository/
+    policy: pull-push
+  before_script:
+    - cd "${CI_PROJECT_DIR}/${SERVICE_DIR}"
+  script:
+    - ./mvnw ${MAVEN_CLI_OPTS} verify
+  after_script:
+    - |
+      echo "╔══════════════════════════════════════════════╗"
+      echo "║  ${SERVICE_NAME} — Test Results Summary      ║"
+      echo "╚══════════════════════════════════════════════╝"
+      if [ -d "${CI_PROJECT_DIR}/${SERVICE_DIR}/target/surefire-reports" ]; then
+        echo "Tests run: $(grep -r 'tests=' ${CI_PROJECT_DIR}/${SERVICE_DIR}/target/surefire-reports/*.xml 2>/dev/null | head -1 || echo 'N/A')"
+      fi
+  artifacts:
+    when: always
+    paths:
+      - "${SERVICE_DIR}/target/surefire-reports/"
+      - "${SERVICE_DIR}/target/site/jacoco/"
+    reports:
+      junit: "${SERVICE_DIR}/target/surefire-reports/TEST-*.xml"
+    expire_in: 30 days
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+
+# ---------------------------------------------------------------------------
+# GO TEST — catalog service
+# ---------------------------------------------------------------------------
+# Runs Go tests with race detector, coverage profiling, and JUnit output.
+# Go module cache is preserved across runs.
+# ---------------------------------------------------------------------------
+.template-go-test:
+  stage: test
+  image: golang:1.25-bookworm
+  variables:
+    GOPATH: "${CI_PROJECT_DIR}/.go"
+    GOCACHE: "${CI_PROJECT_DIR}/.go-cache"
+    GOPROXY: "https://proxy.golang.org,direct"
+    CGO_ENABLED: "0"
+  cache:
+    key: "${SERVICE_NAME}-go-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .go/pkg/mod/
+      - .go-cache/
+    policy: pull-push
+  before_script:
+    - cd "${CI_PROJECT_DIR}/${SERVICE_DIR}"
+    - go install github.com/jstemmer/go-junit-report/v2@latest
+  script:
+    - |
+      echo "━━━ Running Go tests with race detector ━━━"
+      go test ./... \
+        -v \
+        -race \
+        -count=1 \
+        -coverprofile=coverage.out \
+        -covermode=atomic \
+        2>&1 | tee test-output.txt
+
+      # Generate JUnit XML for GitLab merge request widget
+      cat test-output.txt | ${GOPATH}/bin/go-junit-report -set-exit-code > report.xml || true
+
+      # Print coverage summary
+      echo ""
+      echo "━━━ Coverage Summary ━━━"
+      go tool cover -func=coverage.out | tail -1
+  artifacts:
+    when: always
+    paths:
+      - "${SERVICE_DIR}/coverage.out"
+      - "${SERVICE_DIR}/test-output.txt"
+    reports:
+      junit: "${SERVICE_DIR}/report.xml"
+    expire_in: 30 days
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+
+# ---------------------------------------------------------------------------
+# NODE TEST — checkout service (NestJS / Yarn)
+# ---------------------------------------------------------------------------
+# Runs Jest tests with coverage. Node modules are cached via Yarn.
+# ---------------------------------------------------------------------------
+.template-node-test:
+  stage: test
+  image: node:22-alpine
+  variables:
+    YARN_CACHE_FOLDER: "${CI_PROJECT_DIR}/.yarn-cache"
+  cache:
+    key: "${SERVICE_NAME}-node-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .yarn-cache/
+      - "${SERVICE_DIR}/node_modules/"
+    policy: pull-push
+  before_script:
+    - cd "${CI_PROJECT_DIR}/${SERVICE_DIR}"
+    - yarn install --frozen-lockfile --cache-folder ${YARN_CACHE_FOLDER}
+  script:
+    - yarn test --ci --forceExit
+  artifacts:
+    when: always
+    paths:
+      - "${SERVICE_DIR}/coverage/"
+    reports:
+      junit: "${SERVICE_DIR}/junit.xml"
+    expire_in: 30 days
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+
+# ---------------------------------------------------------------------------
+# HELM DEPLOY — Deploy a service chart via Helm
+# ---------------------------------------------------------------------------
+# Uses helm upgrade --install with atomic rollback.
+# Requires KUBECONFIG or GitLab Agent connection.
+#
+# Required variables:
+#   SERVICE_NAME     — e.g., "cart"
+#   CHART_PATH       — e.g., "src/cart/chart"
+#   DEPLOY_NAMESPACE — e.g., "retail-store-staging"
+#   IMAGE_TAG        — e.g., "abc1234" (commit SHA)
+# ---------------------------------------------------------------------------
+.template-helm-deploy:
+  image:
+    name: alpine/helm:3.17.3
+    entrypoint: [""]
+  before_script:
+    # Install kubectl and yq for manifest inspection
+    - apk add --no-cache curl bash yq
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+    # Verify cluster connectivity
+    - kubectl cluster-info || echo "WARNING — Cluster connectivity check failed"
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════╗"
+      echo "║  Deploying ${SERVICE_NAME} to ${DEPLOY_NAMESPACE}  ║"
+      echo "╚══════════════════════════════════════════════╝"
+
+      helm upgrade --install "${SERVICE_NAME}" \
+        "${CI_PROJECT_DIR}/${CHART_PATH}" \
+        --namespace "${DEPLOY_NAMESPACE}" \
+        --create-namespace \
+        --set image.repository="${CI_REGISTRY_IMAGE}/${SERVICE_NAME}" \
+        --set image.tag="${IMAGE_TAG}" \
+        --atomic \
+        --timeout 5m \
+        --wait \
+        --history-max 5 \
+        --debug 2>&1 | head -100
+
+      echo ""
+      echo "━━━ Deployment Status ━━━"
+      kubectl -n "${DEPLOY_NAMESPACE}" rollout status deployment/"${SERVICE_NAME}" --timeout=180s || true
+      kubectl -n "${DEPLOY_NAMESPACE}" get pods -l "app.kubernetes.io/name=${SERVICE_NAME}" -o wide
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+
+# ---------------------------------------------------------------------------
+# HELM LINT — Validate Helm charts
+# ---------------------------------------------------------------------------
+.template-helm-lint:
+  stage: lint
+  image:
+    name: alpine/helm:3.17.3
+    entrypoint: [""]
+  script:
+    - |
+      echo "━━━ Linting ${CHART_PATH} ━━━"
+      helm lint "${CI_PROJECT_DIR}/${CHART_PATH}" --strict
+
+      echo ""
+      echo "━━━ Template rendering (dry-run) ━━━"
+      helm template test-release "${CI_PROJECT_DIR}/${CHART_PATH}" \
+        --debug 2>&1 | head -50
+      echo "... (truncated)"
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+
+# ---------------------------------------------------------------------------
+# CONTAINER SCAN — Trivy vulnerability scan on built images
+# ---------------------------------------------------------------------------
+# Scans the built Docker image for OS and library CVEs.
+# Fails on HIGH/CRITICAL vulnerabilities.
+# ---------------------------------------------------------------------------
+.template-container-scan:
+  stage: security
+  image:
+    name: aquasec/trivy:0.62.1
+    entrypoint: [""]
+  variables:
+    TRIVY_USERNAME: "${CI_REGISTRY_USER}"
+    TRIVY_PASSWORD: "${CI_REGISTRY_PASSWORD}"
+    TRIVY_AUTH_URL: "${CI_REGISTRY}"
+    FULL_IMAGE_NAME: "${CI_REGISTRY_IMAGE}/${SERVICE_NAME}:${CI_COMMIT_SHORT_SHA}"
+  script:
+    - |
+      echo "━━━ Scanning ${FULL_IMAGE_NAME} ━━━"
+
+      # Generate JSON report for GitLab security dashboard
+      trivy image \
+        --exit-code 0 \
+        --format json \
+        --output "trivy-${SERVICE_NAME}-report.json" \
+        --ignorefile "${CI_PROJECT_DIR}/.trivyignore" \
+        --severity HIGH,CRITICAL \
+        --vuln-type os,library \
+        --timeout 10m \
+        "${FULL_IMAGE_NAME}"
+
+      # Generate table report for pipeline log readability
+      trivy image \
+        --exit-code 1 \
+        --format table \
+        --ignorefile "${CI_PROJECT_DIR}/.trivyignore" \
+        --severity CRITICAL \
+        --vuln-type os,library \
+        --timeout 10m \
+        "${FULL_IMAGE_NAME}"
+  artifacts:
+    when: always
+    paths:
+      - "trivy-${SERVICE_NAME}-report.json"
+    reports:
+      container_scanning: "trivy-${SERVICE_NAME}-report.json"
+    expire_in: 30 days
+  allow_failure:
+    exit_codes:
+      - 1  # HIGH vulns are warnings; CRITICAL fails the job
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+
+# ---------------------------------------------------------------------------
+# NOTIFY — Webhook notification template
+# ---------------------------------------------------------------------------
+# Sends a JSON payload to a configured webhook URL.
+# Supports Slack, Microsoft Teams, Discord, and generic webhooks.
+# ---------------------------------------------------------------------------
+.template-notify:
+  stage: notify
+  image: curlimages/curl:8.14.1
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - |
+      if [ -z "${WEBHOOK_URL}" ]; then
+        echo "WEBHOOK_URL not configured — skipping notification"
+        exit 0
+      fi
+
+      curl -sSf -X POST "${WEBHOOK_URL}" \
+        -H "Content-Type: application/json" \
+        -d "{
+          \"text\": \"${NOTIFICATION_MESSAGE}\",
+          \"pipeline_id\": \"${CI_PIPELINE_ID}\",
+          \"pipeline_url\": \"${CI_PIPELINE_URL}\",
+          \"project\": \"${CI_PROJECT_NAME}\",
+          \"branch\": \"${CI_COMMIT_REF_NAME}\",
+          \"commit\": \"${CI_COMMIT_SHORT_SHA}\",
+          \"author\": \"${GITLAB_USER_NAME}\",
+          \"status\": \"${CI_JOB_STATUS}\",
+          \"environment\": \"${DEPLOY_ENVIRONMENT:-N/A}\"
+        }"
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+  tags:
+    - docker

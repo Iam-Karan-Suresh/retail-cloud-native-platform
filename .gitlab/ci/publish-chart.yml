@@ -1,0 +1,193 @@
+# =============================================================================
+# PUBLISH CHART STAGE — Helm Chart Packaging, Registry Push & GitOps Update
+# =============================================================================
+# After successful Docker builds, this stage:
+#   1. Updates image.repository and image.tag in each service's values.yaml
+#   2. Packages Helm charts and pushes to GitLab Helm Registry
+#   3. Commits updated values.yaml back to the repo (GitOps trigger)
+#
+# The commit to main triggers ArgoCD to detect the drift and auto-sync.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# HELM CHART UPDATE & PUBLISH — Per-service
+# ---------------------------------------------------------------------------
+# This job runs once per pipeline (not per service) to batch all changes
+# into a single commit, avoiding commit spam.
+# ---------------------------------------------------------------------------
+publish-charts:
+  stage: publish-chart
+  image:
+    name: alpine/helm:3.17.3
+    entrypoint: [""]
+  variables:
+    GIT_STRATEGY: clone
+    GIT_DEPTH: 1
+  before_script:
+    # Install required tools
+    - apk add --no-cache git bash yq curl jq
+
+    # Configure Helm registry authentication
+    - helm registry login "${CI_REGISTRY}" -u "${CI_REGISTRY_USER}" -p "${CI_REGISTRY_PASSWORD}"
+
+    # Configure Git for commit-back
+    - git config user.email "gitlab-ci@${CI_SERVER_HOST}"
+    - git config user.name "GitLab CI/CD Pipeline"
+    - git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  HELM CHART — Update, Package & Publish          ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      IMAGE_TAG="${CI_COMMIT_SHORT_SHA}"
+      REGISTRY_PREFIX="${CI_REGISTRY_IMAGE}"
+      CHANGES_MADE=false
+
+      # -----------------------------------------------------------------------
+      # 1. UPDATE values.yaml — image.repository + image.tag for each service
+      # -----------------------------------------------------------------------
+      for service in cart catalog checkout orders ui; do
+        VALUES_FILE="src/${service}/chart/values.yaml"
+        CHART_FILE="src/${service}/chart/Chart.yaml"
+
+        if [ ! -f "${VALUES_FILE}" ]; then
+          echo "⚠️  ${VALUES_FILE} not found — skipping"
+          continue
+        fi
+
+        echo ""
+        echo "━━━ Updating ${service} ━━━"
+
+        # Update image repository to GitLab Container Registry
+        CURRENT_REPO=$(yq '.image.repository' "${VALUES_FILE}")
+        NEW_REPO="${REGISTRY_PREFIX}/${service}"
+
+        echo "  repository: ${CURRENT_REPO} → ${NEW_REPO}"
+        yq -i ".image.repository = \"${NEW_REPO}\"" "${VALUES_FILE}"
+
+        # Update image tag to commit SHA
+        CURRENT_TAG=$(yq '.image.tag' "${VALUES_FILE}")
+        echo "  tag: ${CURRENT_TAG} → ${IMAGE_TAG}"
+        yq -i ".image.tag = \"${IMAGE_TAG}\"" "${VALUES_FILE}"
+
+        CHANGES_MADE=true
+
+        # -------------------------------------------------------------------
+        # 2. PACKAGE & PUSH to GitLab Helm Registry
+        # -------------------------------------------------------------------
+        CHART_NAME=$(yq '.name' "${CHART_FILE}")
+        CHART_VERSION=$(yq '.version' "${CHART_FILE}")
+
+        echo "  Packaging ${CHART_NAME}:${CHART_VERSION}..."
+        helm package "src/${service}/chart/" \
+          --destination /tmp/helm-packages/ \
+          --version "${CHART_VERSION}" \
+          --app-version "${IMAGE_TAG}"
+
+        echo "  Pushing to GitLab Helm Registry..."
+        helm push \
+          "/tmp/helm-packages/${CHART_NAME}-${CHART_VERSION}.tgz" \
+          "oci://${CI_REGISTRY_IMAGE}/charts" || echo "  ⚠️  Push failed (may already exist)"
+
+        echo "  ✅ ${service} chart published"
+      done
+
+      # -----------------------------------------------------------------------
+      # 3. COMMIT BACK — GitOps pattern (ArgoCD watches for these changes)
+      # -----------------------------------------------------------------------
+      if [ "${CHANGES_MADE}" = "true" ]; then
+        echo ""
+        echo "━━━ Committing updated values.yaml files ━━━"
+
+        git add src/*/chart/values.yaml
+
+        # Only commit if there are actual changes
+        if git diff --cached --quiet; then
+          echo "  No changes to commit"
+        else
+          git commit -m "ci: update image tags to ${IMAGE_TAG} [skip ci]
+
+      Pipeline: ${CI_PIPELINE_URL}
+      Commit: ${CI_COMMIT_SHA}
+      Author: ${GITLAB_USER_NAME}"
+
+          git push origin HEAD:${CI_COMMIT_BRANCH}
+          echo "  ✅ Committed and pushed updated image tags"
+        fi
+      fi
+
+      echo ""
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  ✅ Helm chart publish complete                   ║"
+      echo "╚══════════════════════════════════════════════════╝"
+  artifacts:
+    paths:
+      - /tmp/helm-packages/
+    expire_in: 7 days
+  rules:
+    # Only run on main branch merges (not MRs, not feature branches)
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: build-cart
+      optional: true
+    - job: build-catalog
+      optional: true
+    - job: build-checkout
+      optional: true
+    - job: build-orders
+      optional: true
+    - job: build-ui
+      optional: true
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# UMBRELLA CHART PUBLISH — Publishes the parent chart (src/app/chart)
+# ---------------------------------------------------------------------------
+publish-umbrella-chart:
+  stage: publish-chart
+  image:
+    name: alpine/helm:3.17.3
+    entrypoint: [""]
+  variables:
+    GIT_STRATEGY: clone
+  before_script:
+    - apk add --no-cache yq
+    - helm registry login "${CI_REGISTRY}" -u "${CI_REGISTRY_USER}" -p "${CI_REGISTRY_PASSWORD}"
+  script:
+    - |
+      echo "━━━ Publishing umbrella chart ━━━"
+
+      CHART_FILE="src/app/chart/Chart.yaml"
+      CHART_NAME=$(yq '.name' "${CHART_FILE}")
+      CHART_VERSION=$(yq '.version' "${CHART_FILE}")
+
+      # Build dependencies first (resolves file:// references)
+      cd "${CI_PROJECT_DIR}/src/app/chart"
+      helm dependency build || echo "⚠️  Dependency build had warnings"
+
+      # Package
+      cd "${CI_PROJECT_DIR}"
+      helm package "src/app/chart/" \
+        --destination /tmp/helm-packages/ \
+        --version "${CHART_VERSION}" \
+        --app-version "${CI_COMMIT_SHORT_SHA}"
+
+      # Push to GitLab Helm Registry
+      helm push \
+        "/tmp/helm-packages/${CHART_NAME}-${CHART_VERSION}.tgz" \
+        "oci://${CI_REGISTRY_IMAGE}/charts" || echo "⚠️  Push failed (may already exist)"
+
+      echo "✅ Umbrella chart ${CHART_NAME}:${CHART_VERSION} published"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/app/chart/**/*
+        - src/*/chart/Chart.yaml
+    - if: $CI_COMMIT_TAG
+  needs:
+    - job: publish-charts
+      optional: true
+  tags:
+    - docker

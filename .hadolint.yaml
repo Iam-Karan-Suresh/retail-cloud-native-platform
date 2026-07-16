@@ -1,0 +1,49 @@
+# =============================================================================
+# HADOLINT CONFIGURATION — Dockerfile Best-Practice Linting
+# =============================================================================
+# Tailored for the Retail Cloud Native Platform Dockerfiles.
+# All 5 services use multi-stage builds with non-root users.
+# Reference: https://github.com/hadolint/hadolint#configure
+# =============================================================================
+
+# Treat violations as warnings by default; security-critical rules are errors
+failure-threshold: warning
+
+# ---------------------------------------------------------------------------
+# IGNORED RULES (with rationale)
+# ---------------------------------------------------------------------------
+ignored:
+  # DL3008: "Pin versions in apt-get install" — base images are version-pinned
+  # already (eclipse-temurin:21-jre-jammy), and we don't install extra packages.
+  - DL3008
+
+  # DL3013: "Pin versions in pip install" — not applicable (no Python services)
+  - DL3013
+
+  # DL3018: "Pin versions in apk add" — checkout uses node:22-alpine base,
+  # we don't install extra Alpine packages.
+  - DL3018
+
+  # DL3059: "Multiple consecutive RUN instructions" — intentional for Docker
+  # layer caching (separate dependency download from source copy).
+  - DL3059
+
+# ---------------------------------------------------------------------------
+# TRUSTED REGISTRIES — Only allow pulls from known registries
+# ---------------------------------------------------------------------------
+trustedRegistries:
+  - docker.io
+  - gcr.io
+  - ghcr.io
+  - public.ecr.aws
+  - registry.gitlab.com
+  - maven
+
+# ---------------------------------------------------------------------------
+# STRICT RULES — These MUST NOT be ignored (security-critical)
+# ---------------------------------------------------------------------------
+# DL3000: Use absolute WORKDIR ✓ (all Dockerfiles comply)
+# DL3002: Do not use sudo ✓ (all Dockerfiles comply)
+# DL3007: Using latest is not allowed ✓ (all images are pinned)
+# DL4006: Set SHELL pipefail ✓ (only relevant for shell-form RUN)
+# SC2086: Double quote to prevent globbing ✓

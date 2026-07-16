@@ -1,0 +1,373 @@
+# =============================================================================
+# LINT STAGE — Code Quality & Static Analysis
+# =============================================================================
+# Multi-tool linting covering every layer of the stack:
+#   1. Hadolint     — Dockerfile best practices
+#   2. Helm Lint    — Helm chart validation
+#   3. YAML Lint    — YAML syntax (ArgoCD, K8s, compose)
+#   4. ShellCheck   — Shell script analysis
+#   5. Terraform    — fmt + validate
+#   6. Go Vet       — Go static analysis (catalog)
+#   7. ESLint       — TypeScript/JS linting (checkout)
+#   8. Maven Check  — Checkstyle + compiler warnings (cart, orders, ui)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 1. HADOLINT — Dockerfile Linting
+# ---------------------------------------------------------------------------
+hadolint:
+  stage: lint
+  image: hadolint/hadolint:2.12.0-alpine
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  HADOLINT — Dockerfile Best-Practice Linting     ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      EXIT_CODE=0
+      for dockerfile in \
+        src/cart/Dockerfile \
+        src/catalog/Dockerfile \
+        src/checkout/Dockerfile \
+        src/orders/Dockerfile \
+        src/ui/Dockerfile; do
+
+        echo ""
+        echo "━━━ ${dockerfile} ━━━"
+        hadolint \
+          --config "${CI_PROJECT_DIR}/.hadolint.yaml" \
+          --format tty \
+          "${CI_PROJECT_DIR}/${dockerfile}" || EXIT_CODE=1
+      done
+
+      if [ "${EXIT_CODE}" = "0" ]; then
+        echo ""
+        echo "✅ All Dockerfiles passed Hadolint checks"
+      fi
+      exit ${EXIT_CODE}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/*/Dockerfile
+        - .hadolint.yaml
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/*/Dockerfile
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# 2. HELM LINT — All Service Charts + Umbrella Chart
+# ---------------------------------------------------------------------------
+helm-lint:
+  stage: lint
+  image:
+    name: alpine/helm:3.17.3
+    entrypoint: [""]
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  HELM LINT — Chart Validation                    ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      EXIT_CODE=0
+      for chart in \
+        src/cart/chart \
+        src/catalog/chart \
+        src/checkout/chart \
+        src/orders/chart \
+        src/ui/chart; do
+
+        echo ""
+        echo "━━━ ${chart} ━━━"
+        helm lint "${CI_PROJECT_DIR}/${chart}" --strict || EXIT_CODE=1
+
+        echo "  → Template dry-run:"
+        helm template test-release "${CI_PROJECT_DIR}/${chart}" \
+          --debug 2>&1 | tail -5
+      done
+
+      echo ""
+      echo "━━━ Umbrella chart: src/app/chart ━━━"
+      # Umbrella chart depends on subcharts via file:// references
+      # We can only lint it if dependencies are built; skip template for now
+      helm lint "${CI_PROJECT_DIR}/src/app/chart" 2>&1 || echo "  (umbrella chart lint — dependency warning expected)"
+
+      if [ "${EXIT_CODE}" = "0" ]; then
+        echo ""
+        echo "✅ All Helm charts passed lint checks"
+      fi
+      exit ${EXIT_CODE}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/*/chart/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/*/chart/**/*
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# 3. YAML LINT — YAML Syntax Validation
+# ---------------------------------------------------------------------------
+yaml-lint:
+  stage: lint
+  image: python:3.13-slim
+  before_script:
+    - pip install --quiet yamllint
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  YAML LINT — Syntax Validation                   ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      # Create yamllint config
+      cat > /tmp/.yamllint.yml << 'EOF'
+      extends: default
+      rules:
+        line-length:
+          max: 200
+          level: warning
+        truthy:
+          check-keys: false
+        comments:
+          min-spaces-from-content: 1
+        document-start: disable
+        braces:
+          min-spaces-inside: 0
+          max-spaces-inside: 1
+      EOF
+
+      yamllint \
+        -c /tmp/.yamllint.yml \
+        -f colored \
+        argocd/ \
+        k8s/ \
+        compose/ \
+        .gitlab-ci.yml \
+        .gitlab/ci/ \
+        2>&1 || true
+
+      echo ""
+      echo "✅ YAML lint completed"
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "**/*.yml"
+        - "**/*.yaml"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# 4. SHELLCHECK — Shell Script Analysis
+# ---------------------------------------------------------------------------
+shellcheck:
+  stage: lint
+  image: koalaman/shellcheck-alpine:v0.10.0
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  SHELLCHECK — Shell Script Analysis              ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      EXIT_CODE=0
+      for script in deploy.sh push.sh; do
+        if [ -f "${CI_PROJECT_DIR}/${script}" ]; then
+          echo ""
+          echo "━━━ ${script} ━━━"
+          shellcheck --severity=warning "${CI_PROJECT_DIR}/${script}" || EXIT_CODE=1
+        fi
+      done
+
+      # Also check any .sh files in src/
+      find "${CI_PROJECT_DIR}/src" -name "*.sh" -type f | while read -r script; do
+        echo "━━━ ${script} ━━━"
+        shellcheck --severity=warning "${script}" || EXIT_CODE=1
+      done
+
+      if [ "${EXIT_CODE}" = "0" ]; then
+        echo "✅ All shell scripts passed ShellCheck"
+      fi
+      exit ${EXIT_CODE}
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - "**/*.sh"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - "**/*.sh"
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# 5. TERRAFORM VALIDATE — Format + Validate
+# ---------------------------------------------------------------------------
+terraform-validate:
+  stage: lint
+  image:
+    name: hashicorp/terraform:1.12
+    entrypoint: [""]
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  TERRAFORM — Format Check + Validate             ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      cd "${CI_PROJECT_DIR}/terraform"
+
+      echo "━━━ Format check ━━━"
+      terraform fmt -check -recursive -diff
+
+      echo ""
+      echo "━━━ Init (backend=false) ━━━"
+      terraform init -backend=false
+
+      echo ""
+      echo "━━━ Validate ━━━"
+      terraform validate
+
+      echo ""
+      echo "✅ Terraform validation passed"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - terraform/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - terraform/**/*
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# 6. GO VET — Go Static Analysis (catalog)
+# ---------------------------------------------------------------------------
+go-vet:
+  stage: lint
+  image: golang:1.25-bookworm
+  variables:
+    GOPATH: "${CI_PROJECT_DIR}/.go"
+    GOPROXY: "https://proxy.golang.org,direct"
+  cache:
+    key: "catalog-go-lint-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .go/pkg/mod/
+    policy: pull-push
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  GO VET — Static Analysis (catalog)              ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      cd "${CI_PROJECT_DIR}/src/catalog"
+      go mod download
+
+      echo "━━━ go vet ━━━"
+      go vet ./...
+
+      echo ""
+      echo "━━━ go build (compile check) ━━━"
+      CGO_ENABLED=0 go build -o /dev/null ./...
+
+      echo ""
+      echo "✅ Go vet passed"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/catalog/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/catalog/**/*
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# 7. ESLINT — TypeScript Linting (checkout)
+# ---------------------------------------------------------------------------
+eslint-checkout:
+  stage: lint
+  image: node:22-alpine
+  variables:
+    YARN_CACHE_FOLDER: "${CI_PROJECT_DIR}/.yarn-cache"
+  cache:
+    key: "checkout-node-lint-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .yarn-cache/
+      - src/checkout/node_modules/
+    policy: pull-push
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  ESLINT — TypeScript Linting (checkout)          ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      cd "${CI_PROJECT_DIR}/src/checkout"
+      yarn install --frozen-lockfile --cache-folder ${YARN_CACHE_FOLDER}
+
+      echo "━━━ ESLint ━━━"
+      yarn lint
+
+      echo ""
+      echo "✅ ESLint passed"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/checkout/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/checkout/**/*
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# 8. MAVEN COMPILE CHECK — Java Services (cart, orders, ui)
+# ---------------------------------------------------------------------------
+maven-compile-check:
+  stage: lint
+  image: maven:3.9.9-eclipse-temurin-21
+  variables:
+    MAVEN_OPTS: >-
+      -Dmaven.repo.local=${CI_PROJECT_DIR}/.m2/repository
+      -Dorg.slf4j.simpleLogger.showDateTime=true
+      -Djava.awt.headless=true
+  cache:
+    key: "java-lint-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .m2/repository/
+    policy: pull-push
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  MAVEN — Compile Check (cart, orders, ui)        ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      EXIT_CODE=0
+      for service in cart orders ui; do
+        echo ""
+        echo "━━━ ${service} ━━━"
+        cd "${CI_PROJECT_DIR}/src/${service}"
+        ./mvnw --batch-mode -DskipTests compile || EXIT_CODE=1
+        cd "${CI_PROJECT_DIR}"
+      done
+
+      if [ "${EXIT_CODE}" = "0" ]; then
+        echo ""
+        echo "✅ All Java services compiled successfully"
+      fi
+      exit ${EXIT_CODE}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/cart/**/*
+        - src/orders/**/*
+        - src/ui/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/cart/**/*
+        - src/orders/**/*
+        - src/ui/**/*
+  tags:
+    - docker

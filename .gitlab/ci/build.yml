@@ -1,0 +1,189 @@
+# =============================================================================
+# BUILD STAGE — Kaniko Docker Build & Push + Container Scanning
+# =============================================================================
+# Builds Docker images for all 5 services using Kaniko (rootless).
+# Images are pushed to GitLab Container Registry with multi-tag strategy.
+# Each built image is then scanned by Trivy for vulnerabilities.
+#
+# Monorepo optimization: Only builds services whose source code changed.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# CART — Java/Spring Boot → eclipse-temurin
+# ---------------------------------------------------------------------------
+build-cart:
+  extends: .template-docker-build
+  variables:
+    SERVICE_NAME: cart
+    DOCKERFILE_PATH: src/cart/Dockerfile
+    BUILD_CONTEXT: src/cart
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/cart/**/*
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/cart/**/*
+  needs:
+    - job: test-cart
+      optional: true
+
+scan-cart:
+  extends: .template-container-scan
+  variables:
+    SERVICE_NAME: cart
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/cart/**/*
+    - if: $CI_COMMIT_TAG
+  needs:
+    - job: build-cart
+
+# ---------------------------------------------------------------------------
+# CATALOG — Go → distroless
+# ---------------------------------------------------------------------------
+build-catalog:
+  extends: .template-docker-build
+  variables:
+    SERVICE_NAME: catalog
+    DOCKERFILE_PATH: src/catalog/Dockerfile
+    BUILD_CONTEXT: src/catalog
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/catalog/**/*
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/catalog/**/*
+  needs:
+    - job: test-catalog
+      optional: true
+
+scan-catalog:
+  extends: .template-container-scan
+  variables:
+    SERVICE_NAME: catalog
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/catalog/**/*
+    - if: $CI_COMMIT_TAG
+  needs:
+    - job: build-catalog
+
+# ---------------------------------------------------------------------------
+# CHECKOUT — Node.js/NestJS → Alpine
+# ---------------------------------------------------------------------------
+build-checkout:
+  extends: .template-docker-build
+  variables:
+    SERVICE_NAME: checkout
+    DOCKERFILE_PATH: src/checkout/Dockerfile
+    BUILD_CONTEXT: src/checkout
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/checkout/**/*
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/checkout/**/*
+  needs:
+    - job: test-checkout
+      optional: true
+
+scan-checkout:
+  extends: .template-container-scan
+  variables:
+    SERVICE_NAME: checkout
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/checkout/**/*
+    - if: $CI_COMMIT_TAG
+  needs:
+    - job: build-checkout
+
+# ---------------------------------------------------------------------------
+# ORDERS — Java/Spring Boot → eclipse-temurin
+# ---------------------------------------------------------------------------
+build-orders:
+  extends: .template-docker-build
+  variables:
+    SERVICE_NAME: orders
+    DOCKERFILE_PATH: src/orders/Dockerfile
+    BUILD_CONTEXT: src/orders
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/orders/**/*
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/orders/**/*
+  needs:
+    - job: test-orders
+      optional: true
+
+scan-orders:
+  extends: .template-container-scan
+  variables:
+    SERVICE_NAME: orders
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/orders/**/*
+    - if: $CI_COMMIT_TAG
+  needs:
+    - job: build-orders
+
+# ---------------------------------------------------------------------------
+# UI — Java/Spring Boot → eclipse-temurin
+# ---------------------------------------------------------------------------
+build-ui:
+  extends: .template-docker-build
+  variables:
+    SERVICE_NAME: ui
+    DOCKERFILE_PATH: src/ui/Dockerfile
+    BUILD_CONTEXT: src/ui
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/ui/**/*
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/ui/**/*
+  needs:
+    - job: test-ui
+      optional: true
+
+scan-ui:
+  extends: .template-container-scan
+  variables:
+    SERVICE_NAME: ui
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/ui/**/*
+    - if: $CI_COMMIT_TAG
+  needs:
+    - job: build-ui
+
+# ---------------------------------------------------------------------------
+# BUILD ALL — Convenience job that triggers all builds
+# ---------------------------------------------------------------------------
+# Used when infrastructure changes affect all services (e.g., base image update)
+# ---------------------------------------------------------------------------
+build-all:
+  stage: build
+  image: alpine:3.22
+  script:
+    - echo "All service builds triggered"
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $FORCE_BUILD_ALL == "true"
+  needs: []
