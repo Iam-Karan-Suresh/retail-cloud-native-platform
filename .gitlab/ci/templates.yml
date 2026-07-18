@@ -6,7 +6,7 @@
 #
 # Usage: `extends: .template-<name>` in service-specific job definitions.
 #
-# Author: Senior DevOps/CICD Engineer
+# Author: Karan Suresh
 # =============================================================================
 
 # ---------------------------------------------------------------------------
