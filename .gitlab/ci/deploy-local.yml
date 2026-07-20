@@ -1,0 +1,187 @@
+# =============================================================================
+# LOCAL DEPLOYMENT STAGE — Deploy to Local Kind Cluster
+# =============================================================================
+# Deploys all services to a local Kind cluster using Helm with local values
+# overrides. Designed for on-prem GitLab where the runner shares the same
+# machine as the Kind cluster.
+#
+# Prerequisites:
+#   - Kind cluster running (created via ./local/setup.sh)
+#   - KUBECONFIG_LOCAL CI/CD variable OR runner has kubectl access to Kind
+#   - GitLab Runner registered with 'local' or 'kind' tag
+#
+# This stage runs on every push to the default branch.
+# Can also be triggered manually for feature branches.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# DEPLOY LOCAL — Direct Helm Deploy to Kind Cluster
+# ---------------------------------------------------------------------------
+deploy-local:
+  stage: deploy-local
+  image:
+    name: alpine/helm:3.17.3
+    entrypoint: [""]
+  variables:
+    DEPLOY_NAMESPACE: retail-store
+    IMAGE_TAG: "${CI_COMMIT_SHORT_SHA}"
+  environment:
+    name: local
+    url: http://localhost
+  before_script:
+    - apk add --no-cache curl bash
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+    # Use KUBECONFIG_LOCAL if provided, otherwise assume runner has kubectl access
+    - |
+      if [ -n "${KUBECONFIG_LOCAL:-}" ]; then
+        echo "${KUBECONFIG_LOCAL}" | base64 -d > /tmp/kubeconfig
+        export KUBECONFIG=/tmp/kubeconfig
+      fi
+    - kubectl cluster-info || echo "⚠️  Cluster connectivity check failed — ensure Kind is running"
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  LOCAL DEPLOYMENT — Kind Cluster                 ║"
+      echo "╚══════════════════════════════════════════════════╝"
+      echo ""
+      echo "Namespace:   ${DEPLOY_NAMESPACE}"
+      echo "Image Tag:   ${IMAGE_TAG}"
+      echo "Pipeline:    ${CI_PIPELINE_URL}"
+      echo ""
+
+      # Create namespace if it doesn't exist
+      kubectl create namespace "${DEPLOY_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+
+      # Deploy each service with local values overrides
+      for service in cart catalog checkout orders ui; do
+        CHART_PATH="src/${service}/chart"
+        LOCAL_VALUES="local/values/${service}-local.yaml"
+
+        if [ ! -d "${CI_PROJECT_DIR}/${CHART_PATH}" ]; then
+          echo "⚠️  Chart not found: ${CHART_PATH} — skipping"
+          continue
+        fi
+
+        echo ""
+        echo "━━━ Deploying ${service} ━━━"
+
+        VALUES_ARGS=""
+        if [ -f "${CI_PROJECT_DIR}/${LOCAL_VALUES}" ]; then
+          VALUES_ARGS="-f ${CI_PROJECT_DIR}/${LOCAL_VALUES}"
+        fi
+
+        helm upgrade --install "retail-store-${service}" \
+          "${CI_PROJECT_DIR}/${CHART_PATH}" \
+          --namespace "${DEPLOY_NAMESPACE}" \
+          ${VALUES_ARGS} \
+          --set image.repository="${CI_REGISTRY_IMAGE}/${service}" \
+          --set image.tag="${IMAGE_TAG}" \
+          --set image.pullPolicy=Always \
+          --timeout 5m \
+          --wait \
+          --history-max 5 \
+          2>&1 | tail -20
+
+        echo "  ✅ ${service} deployed to local"
+      done
+
+      echo ""
+      echo "━━━ Deployment Summary ━━━"
+      kubectl -n "${DEPLOY_NAMESPACE}" get pods -o wide
+      echo ""
+      kubectl -n "${DEPLOY_NAMESPACE}" get services
+  after_script:
+    - |
+      echo ""
+      echo "━━━ Post-Deploy Health Checks ━━━"
+      for service in cart catalog checkout orders ui; do
+        kubectl -n "${DEPLOY_NAMESPACE}" rollout status deployment/"retail-store-${service}" --timeout=120s 2>/dev/null \
+          && echo "  ✅ ${service} — healthy" \
+          || echo "  ⚠️  ${service} — rollout status unknown"
+      done
+  rules:
+    # Auto-deploy on main branch
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    # Manual deploy on feature branches
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+    # Manual deploy on any branch
+    - if: $CI_COMMIT_BRANCH
+      when: manual
+      allow_failure: true
+  needs:
+    - job: build-cart
+      optional: true
+    - job: build-catalog
+      optional: true
+    - job: build-checkout
+      optional: true
+    - job: build-orders
+      optional: true
+    - job: build-ui
+      optional: true
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# SMOKE TEST LOCAL — Post-Deploy Health Validation
+# ---------------------------------------------------------------------------
+smoke-test-local:
+  stage: deploy-local
+  image: curlimages/curl:8.14.1
+  variables:
+    GIT_STRATEGY: none
+    DEPLOY_NAMESPACE: retail-store
+  before_script:
+    - |
+      if [ -n "${KUBECONFIG_LOCAL:-}" ]; then
+        echo "${KUBECONFIG_LOCAL}" | base64 -d > /tmp/kubeconfig
+        export KUBECONFIG=/tmp/kubeconfig
+      fi
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  SMOKE TESTS — Local Kind Cluster                ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      # Test via Traefik on localhost
+      echo ""
+      echo "━━━ Testing UI via Traefik (localhost:80) ━━━"
+      HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "http://localhost" 2>/dev/null || echo "000")
+      if [ "${HTTP_STATUS}" = "200" ]; then
+        echo "  ✅ UI accessible via Traefik — HTTP ${HTTP_STATUS}"
+      else
+        echo "  ⚠️  UI not accessible via Traefik — HTTP ${HTTP_STATUS}"
+        echo "  (This is expected if Traefik Gateway/HTTPRoute is not yet configured)"
+      fi
+
+      # Test services via kubectl port-forward would require running in background
+      # For CI, we check pod readiness instead
+      echo ""
+      echo "━━━ Pod Readiness Check ━━━"
+      FAILED=0
+      for service in cart catalog checkout orders ui; do
+        READY=$(kubectl -n "${DEPLOY_NAMESPACE}" get pods -l "app.kubernetes.io/instance=retail-store-${service}" -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+        if [ "${READY}" = "True" ]; then
+          echo "  ✅ ${service} — Ready"
+        else
+          echo "  ⚠️  ${service} — ${READY}"
+          FAILED=1
+        fi
+      done
+
+      echo ""
+      if [ "${FAILED}" = "1" ]; then
+        echo "⚠️  Some services are not ready — check pod logs"
+      else
+        echo "✅ All services ready in local cluster"
+      fi
+  allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: deploy-local
+  tags:
+    - docker

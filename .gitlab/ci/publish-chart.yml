@@ -1,12 +1,12 @@
 # =============================================================================
-# PUBLISH CHART STAGE — Helm Chart Packaging, Registry Push & GitOps Update
+# PUBLISH CHART STAGE — Helm Chart Packaging & Registry Push
 # =============================================================================
 # After successful Docker builds, this stage:
 #   1. Updates image.repository and image.tag in each service's values.yaml
 #   2. Packages Helm charts and pushes to GitLab Helm Registry
-#   3. Commits updated values.yaml back to the repo (GitOps trigger)
 #
-# The commit to main triggers ArgoCD to detect the drift and auto-sync.
+# Charts are consumed by the deploy-staging / deploy-production / deploy-local
+# jobs via direct Helm install.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -25,15 +25,10 @@ publish-charts:
     GIT_DEPTH: 1
   before_script:
     # Install required tools
-    - apk add --no-cache git bash yq curl jq
+    - apk add --no-cache bash yq curl jq
 
     # Configure Helm registry authentication
     - helm registry login "${CI_REGISTRY}" -u "${CI_REGISTRY_USER}" -p "${CI_REGISTRY_PASSWORD}"
-
-    # Configure Git for commit-back
-    - git config user.email "gitlab-ci@${CI_SERVER_HOST}"
-    - git config user.name "GitLab CI/CD Pipeline"
-    - git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
   script:
     - |
       echo "╔══════════════════════════════════════════════════╗"
@@ -92,30 +87,6 @@ publish-charts:
 
         echo "  ✅ ${service} chart published"
       done
-
-      # -----------------------------------------------------------------------
-      # 3. COMMIT BACK — GitOps pattern (ArgoCD watches for these changes)
-      # -----------------------------------------------------------------------
-      if [ "${CHANGES_MADE}" = "true" ]; then
-        echo ""
-        echo "━━━ Committing updated values.yaml files ━━━"
-
-        git add src/*/chart/values.yaml
-
-        # Only commit if there are actual changes
-        if git diff --cached --quiet; then
-          echo "  No changes to commit"
-        else
-          git commit -m "ci: update image tags to ${IMAGE_TAG} [skip ci]
-
-      Pipeline: ${CI_PIPELINE_URL}
-      Commit: ${CI_COMMIT_SHA}
-      Author: ${GITLAB_USER_NAME}"
-
-          git push origin HEAD:${CI_COMMIT_BRANCH}
-          echo "  ✅ Committed and pushed updated image tags"
-        fi
-      fi
 
       echo ""
       echo "╔══════════════════════════════════════════════════╗"

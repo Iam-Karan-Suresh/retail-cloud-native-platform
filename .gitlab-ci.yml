@@ -15,13 +15,13 @@
 #  Services:     cart | catalog | checkout | orders | ui
 #  Registry:     GitLab Container Registry (OCI)
 #  Charts:       Helm v3 → GitLab Helm Registry
-#  CD:           ArgoCD (GitOps) + Argo Rollouts (Canary)
+#  CD:           Direct Helm Deploy (local Kind / on-prem K8s)
 #  Security:     Gitleaks, SAST, Secret Detection, Dependency Scan,
 #                Container Scan (Trivy), License Compliance, IaC Scan, DAST
 #
 #  Pipeline Flow:
 #    preflight → security → lint → test → build → scan → publish-chart
-#              → deploy-staging → integration-test → deploy-production → notify
+#              → deploy-staging → integration-test → deploy-production → deploy-local → notify
 #
 #  Author: Senior DevOps/CICD Engineer
 #  Docs:   See .gitlab/ci/*.yml for detailed stage documentation
@@ -41,10 +41,11 @@ stages:
   - test               # Unit tests (Maven/Go/Jest), integration tests
   - build              # Kaniko Docker build → GitLab Container Registry
   - scan               # Trivy container image scanning (post-build)
-  - publish-chart      # Helm chart packaging, registry push, values.yaml update
+  - publish-chart      # Helm chart packaging, registry push
   - deploy-staging     # Staging/review-app deployment
   - integration-test   # Smoke tests, DAST against staging
-  - deploy-production  # Manual gate → ArgoCD sync / Helm deploy
+  - deploy-production  # Manual gate → direct Helm deploy
+  - deploy-local       # Local Kind cluster deployment
   - notify             # Pipeline & deployment notifications
 
 # ---------------------------------------------------------------------------
@@ -155,6 +156,9 @@ include:
   # Production deployment + verification + rollback
   - local: .gitlab/ci/deploy-production.yml
 
+  # Local Kind cluster deployment
+  - local: .gitlab/ci/deploy-local.yml
+
   # Pipeline & deployment notifications (Slack, Teams, webhooks)
   - local: .gitlab/ci/notifications.yml
 
@@ -240,8 +244,7 @@ preflight:
 # ├──────────────────────────┼──────────────────────────────────────────────┤
 # │ KUBECONFIG               │ Base64 kubeconfig for staging cluster        │
 # │ KUBECONFIG_PRODUCTION    │ Base64 kubeconfig for production (protected) │
-# │ ARGOCD_SERVER            │ ArgoCD server URL (e.g., argocd.example.com) │
-# │ ARGOCD_AUTH_TOKEN        │ ArgoCD API token (protected + masked)        │
+# │ KUBECONFIG_LOCAL         │ Base64 kubeconfig for local Kind cluster     │
 # │ WEBHOOK_URL              │ Generic webhook URL for notifications        │
 # │ SLACK_WEBHOOK_URL        │ Slack incoming webhook URL                   │
 # │ FORCE_BUILD_ALL          │ Set to "true" to force all service builds    │

@@ -53,7 +53,7 @@ deploy-staging:
 
         echo ""
         echo "━━━ Deploying ${service} ━━━"
-        helm upgrade --install "${service}" \
+        helm upgrade --install "retail-store-${service}" \
           "${CI_PROJECT_DIR}/${CHART_PATH}" \
           --namespace "${DEPLOY_NAMESPACE}" \
           --create-namespace \
@@ -79,7 +79,7 @@ deploy-staging:
       echo ""
       echo "━━━ Post-Deploy Health Checks ━━━"
       for service in cart catalog checkout orders ui; do
-        kubectl -n "${DEPLOY_NAMESPACE}" rollout status deployment/"${service}" --timeout=120s 2>/dev/null \
+        kubectl -n "${DEPLOY_NAMESPACE}" rollout status deployment/"retail-store-${service}" --timeout=120s 2>/dev/null \
           && echo "  ✅ ${service} — healthy" \
           || echo "  ⚠️  ${service} — rollout status unknown"
       done
@@ -120,7 +120,7 @@ stop-staging:
     - |
       echo "Stopping staging environment..."
       for service in cart catalog checkout orders ui; do
-        helm uninstall "${service}" -n "${DEPLOY_NAMESPACE}" 2>/dev/null || true
+        helm uninstall "retail-store-${service}" -n "${DEPLOY_NAMESPACE}" 2>/dev/null || true
       done
       kubectl delete namespace "${DEPLOY_NAMESPACE}" --ignore-not-found=true || true
       echo "✅ Staging environment cleaned up"
@@ -162,7 +162,7 @@ deploy-review:
         CHART_PATH="src/${service}/chart"
         if [ -d "${CI_PROJECT_DIR}/${CHART_PATH}" ]; then
           echo "━━━ Deploying ${service} ━━━"
-          helm upgrade --install "${service}" \
+          helm upgrade --install "retail-store-${service}" \
             "${CI_PROJECT_DIR}/${CHART_PATH}" \
             --namespace "${DEPLOY_NAMESPACE}" \
             --create-namespace \
@@ -217,7 +217,7 @@ stop-review:
     - |
       echo "Cleaning up review app: ${DEPLOY_NAMESPACE}"
       for service in cart catalog checkout orders ui; do
-        helm uninstall "${service}" -n "${DEPLOY_NAMESPACE}" 2>/dev/null || true
+        helm uninstall "retail-store-${service}" -n "${DEPLOY_NAMESPACE}" 2>/dev/null || true
       done
       kubectl delete namespace "${DEPLOY_NAMESPACE}" --ignore-not-found=true || true
       echo "✅ Review app cleaned up"

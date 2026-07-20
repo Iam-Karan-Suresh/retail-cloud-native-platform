@@ -1,0 +1,68 @@
+# =============================================================================
+# LOCAL STATEFUL MODE — Values Override
+# =============================================================================
+# Enables real databases (MySQL, PostgreSQL, Redis, RabbitMQ, DynamoDB Local)
+# for local Kind deployment. No nodeSelector/tolerations (Kind has no taints).
+#
+# Usage: ./local/setup.sh --stateful
+#   OR:  helm install ... -f values.yaml -f local/values/<svc>-local.yaml -f local/values-local-stateful.yaml
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# CART — Enable DynamoDB Local
+# ---------------------------------------------------------------------------
+cart:
+  app:
+    persistence:
+      provider: dynamodb
+  dynamodb:
+    create: true
+    nodeSelector: {}
+    tolerations: []
+
+# ---------------------------------------------------------------------------
+# CATALOG — Enable MySQL
+# ---------------------------------------------------------------------------
+catalog:
+  app:
+    persistence:
+      provider: 'mysql'
+  mysql:
+    create: true
+    nodeSelector: {}
+    tolerations: []
+
+# ---------------------------------------------------------------------------
+# CHECKOUT — Enable Redis
+# ---------------------------------------------------------------------------
+checkout:
+  app:
+    persistence:
+      provider: redis
+  redis:
+    create: true
+    nodeSelector: {}
+    tolerations: []
+
+# ---------------------------------------------------------------------------
+# ORDERS — Enable PostgreSQL + RabbitMQ + KEDA
+# ---------------------------------------------------------------------------
+orders:
+  app:
+    persistence:
+      provider: 'postgres'
+    messaging:
+      provider: 'rabbitmq'
+  postgresql:
+    create: true
+    nodeSelector: {}
+    tolerations: []
+  rabbitmq:
+    create: true
+    nodeSelector: {}
+    tolerations: []
+  # Enable KEDA now that RabbitMQ is running
+  keda:
+    enabled: true
+    minReplicaCount: 1
+    maxReplicaCount: 5

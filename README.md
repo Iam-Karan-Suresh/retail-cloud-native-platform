@@ -8,7 +8,7 @@
   </strong>
 </div>
 
-A production-grade retail store application deployed on AWS EKS with Karpenter-based spot instance provisioning, GitOps via ArgoCD, and full observability. This project demonstrates how to build a cost-optimized, highly available microservices platform using modern cloud-native tooling.
+A production-grade retail store application deployed on AWS EKS with Karpenter-based spot instance provisioning, and full observability. Also supports **local development** via Kind (Kubernetes in Docker) with GitLab on-prem CI/CD. See [LOCAL-SETUP.md](./LOCAL-SETUP.md) for the local deployment guide.
 
 ---
 
@@ -17,15 +17,15 @@ A production-grade retail store application deployed on AWS EKS with Karpenter-b
 - [How It Works (The Big Picture)](#how-it-works-the-big-picture)
 - [Application Architecture](#application-architecture)
 - [Infrastructure Architecture](#infrastructure-architecture)
+- [Local Development (Kind)](#local-development-kind)
 - [Version Matrix](#version-matrix)
-- [Workload Placement \& Spot Optimization](#workload-placement--spot-optimization)
+- [Workload Placement & Spot Optimization](#workload-placement--spot-optimization)
 - [What Happens When a Spot Instance Gets Reclaimed?](#what-happens-when-a-spot-instance-gets-reclaimed)
 - [Project Structure](#project-structure)
 - [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Step-by-Step Deployment](#step-by-step-deployment)
+- [Quick Start (AWS)](#quick-start-aws)
+- [Step-by-Step Deployment (AWS)](#step-by-step-deployment)
 - [Accessing the Application](#accessing-the-application)
-- [GitOps with ArgoCD](#gitops-with-argocd)
 - [Custom Domain Setup (Optional)](#custom-domain-setup-optional)
 - [Cleanup](#cleanup)
 - [Troubleshooting](#troubleshooting)
@@ -326,7 +326,29 @@ aws --version && terraform --version && kubectl version --client && docker --ver
 
 ---
 
-## Quick Start
+## Local Development (Kind)
+
+**Don't have an AWS account?** Run the entire platform locally:
+
+```bash
+# 1. Clone the repo
+git clone https://your-gitlab-server/your-group/retail-cloud-native-platform.git
+cd retail-cloud-native-platform
+
+# 2. Run the automated setup
+./local/setup.sh
+
+# 3. Open in browser
+open http://localhost
+```
+
+This creates a 3-node Kind cluster with Traefik, KEDA, and all 5 microservices. No AWS, no Terraform, no ArgoCD.
+
+For the full guide including GitLab on-prem CI/CD setup, stateful backends, and development workflow, see **[LOCAL-SETUP.md](./LOCAL-SETUP.md)**.
+
+---
+
+## Quick Start (AWS)
 
 ```bash
 # 1. Configure AWS credentials
@@ -470,22 +492,21 @@ Open https://localhost:8080 — Username: `admin`, Password: from above command.
 
 ---
 
-## GitOps with ArgoCD
+## CI/CD with GitLab
 
-ArgoCD watches the Git repository and automatically syncs Kubernetes manifests:
+The CI/CD pipeline deploys directly via Helm (no ArgoCD dependency):
 
-1. Push a change to `src/ui/chart/values.yaml` (e.g., bump `replicaCount: 4` → `5`)
-2. ArgoCD detects the drift within 3 minutes
-3. ArgoCD applies the change to the cluster
-4. Karpenter provisions a new node if needed
-5. New pod starts on the Karpenter node
+1. Push a change to `src/ui/chart/values.yaml` (e.g., bump `replicaCount: 1` → `2`)
+2. GitLab CI pipeline triggers: lint → test → build → deploy
+3. The `deploy-local` stage runs `helm upgrade --install` with local values
+4. The `deploy-production` stage (manual gate) deploys to production cluster
 
 ### Branch Strategy
 
 | Branch | Purpose | Images | Deployment |
 |--------|---------|--------|------------|
-| **main** | Simple deployment | Public ECR (v1.2.2) | Manual |
-| **production** | Full CI/CD pipeline | Private ECR (commit hashes) | Automated via GitHub Actions |
+| **main** | Development | GitLab Container Registry | Auto-deploy to staging + local |
+| **tags** | Releases | GitLab Container Registry (semver) | Manual deploy to production |
 
 ---
 

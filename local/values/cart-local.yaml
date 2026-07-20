@@ -1,0 +1,50 @@
+# =============================================================================
+# LOCAL VALUES OVERRIDE — Cart Service
+# =============================================================================
+# Strips AWS-specific scheduling, reduces resources for Kind.
+#
+# Usage: helm install ... -f values.yaml -f local/values/cart-local.yaml
+# =============================================================================
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/iam-karan-suresh/retail-store-sample-cart
+  pullPolicy: IfNotPresent
+  tag: '1.3.0'
+
+# Remove AWS scheduling
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+# Reduced resources
+resources:
+  limits:
+    memory: 384Mi
+  requests:
+    cpu: 64m
+    memory: 256Mi
+
+# Disable PDB
+podDisruptionBudget:
+  enabled: false
+
+# Cart uses in-memory by default — no DynamoDB needed locally
+app:
+  persistence:
+    provider: in-memory
+
+# DynamoDB Local — not created by default
+dynamodb:
+  create: false
+  nodeSelector: {}
+  tolerations: []
+
+# Disable OpenTelemetry
+opentelemetry:
+  enabled: false
+
+autoscaling:
+  enabled: false

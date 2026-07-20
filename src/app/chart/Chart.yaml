@@ -24,3 +24,7 @@ dependencies:
     alias: ui
     version: 1.2.2
     repository: file://../../ui/chart
+  # NOTE: Traefik is installed separately via:
+  #   - local/setup.sh (Kind)
+  #   - terraform/addons.tf (AWS EKS)
+  # It is NOT bundled as a subchart dependency.
