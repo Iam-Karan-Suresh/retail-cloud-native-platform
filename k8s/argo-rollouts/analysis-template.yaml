@@ -1,0 +1,80 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: canary-analysis
+  namespace: retail-store
+spec:
+  args:
+    - name: service-name
+    - name: canary-hash
+    - name: stable-hash
+  metrics:
+    # SUCCESS RATE: HTTP 5xx error rate must be below 1%
+    - name: success-rate
+      interval: 60s
+      count: 5
+      successCondition: result[0] <= 0.01
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc.cluster.local:9090
+          query: |
+            sum(rate(http_server_request_duration_seconds_count{
+              service_name="{{args.service-name}}",
+              http_response_status_code=~"5.."
+            }[5m]))
+            /
+            sum(rate(http_server_request_duration_seconds_count{
+              service_name="{{args.service-name}}"
+            }[5m]))
+
+    # LATENCY: P95 latency must be below 500ms
+    - name: latency-p95
+      interval: 60s
+      count: 5
+      successCondition: result[0] <= 0.5
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc.cluster.local:9090
+          query: |
+            histogram_quantile(0.95,
+              sum(rate(http_server_request_duration_seconds_bucket{
+                service_name="{{args.service-name}}"
+              }[5m])) by (le)
+            )
+
+    # SATURATION: Container memory usage must stay below 90%
+    - name: memory-saturation
+      interval: 120s
+      count: 3
+      successCondition: result[0] < 0.9
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc.cluster.local:9090
+          query: |
+            max(
+              container_memory_working_set_bytes{
+                pod=~"{{args.service-name}}-.*"
+              }
+              /
+              kube_pod_container_resource_limits{
+                pod=~"{{args.service-name}}-.*",
+                resource="memory"
+              }
+            )
+
+    # AVAILABILITY: At least one pod must be ready
+    - name: pod-availability
+      interval: 30s
+      count: 10
+      successCondition: result[0] >= 1
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: http://prometheus.observability.svc.cluster.local:9090
+          query: |
+            kube_deployment_status_replicas_available{
+              deployment="{{args.service-name}}"
+            }

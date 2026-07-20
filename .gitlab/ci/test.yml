@@ -1,0 +1,162 @@
+# =============================================================================
+# TEST STAGE — Unit & Integration Testing
+# =============================================================================
+# Per-service test execution with coverage reports and JUnit XML artifacts.
+# Each job extends the language-specific template from templates.yml.
+#
+# Test results are published to:
+#   - GitLab MR widget (JUnit reports)
+#   - Pipeline artifacts (coverage reports)
+#   - Code coverage badge (via coverage regex)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# CART — Java/Spring Boot (Maven + JUnit 5 + JaCoCo)
+# ---------------------------------------------------------------------------
+test-cart:
+  extends: .template-maven-test
+  variables:
+    SERVICE_NAME: cart
+    SERVICE_DIR: src/cart
+  coverage: '/Total.*?(\d+%)/'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/cart/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/cart/**/*
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# CATALOG — Go (go test + race detector + coverage)
+# ---------------------------------------------------------------------------
+test-catalog:
+  extends: .template-go-test
+  variables:
+    SERVICE_NAME: catalog
+    SERVICE_DIR: src/catalog
+  coverage: '/^total:\s+\(statements\)\s+(\d+\.\d+)%/'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/catalog/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/catalog/**/*
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# CHECKOUT — Node.js/NestJS (Jest + coverage)
+# ---------------------------------------------------------------------------
+test-checkout:
+  extends: .template-node-test
+  variables:
+    SERVICE_NAME: checkout
+    SERVICE_DIR: src/checkout
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/checkout/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/checkout/**/*
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# ORDERS — Java/Spring Boot (Maven + JUnit 5 + JaCoCo)
+# ---------------------------------------------------------------------------
+test-orders:
+  extends: .template-maven-test
+  variables:
+    SERVICE_NAME: orders
+    SERVICE_DIR: src/orders
+  coverage: '/Total.*?(\d+%)/'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/orders/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/orders/**/*
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# UI — Java/Spring Boot (Maven + JUnit 5 + JaCoCo)
+# ---------------------------------------------------------------------------
+test-ui:
+  extends: .template-maven-test
+  variables:
+    SERVICE_NAME: ui
+    SERVICE_DIR: src/ui
+  coverage: '/Total.*?(\d+%)/'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/ui/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/ui/**/*
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# CATALOG INTEGRATION TESTS — Testcontainers (MySQL + full stack)
+# ---------------------------------------------------------------------------
+# The catalog service has testcontainers in go.mod — these tests spin up
+# real MySQL containers for integration testing.
+# Requires Docker socket access (DinD or Kaniko runner with Docker).
+# ---------------------------------------------------------------------------
+test-catalog-integration:
+  stage: test
+  image: golang:1.25-bookworm
+  services:
+    - docker:27-dind
+  variables:
+    GOPATH: "${CI_PROJECT_DIR}/.go"
+    GOCACHE: "${CI_PROJECT_DIR}/.go-cache"
+    GOPROXY: "https://proxy.golang.org,direct"
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_CERT_PATH: "/certs/client"
+    DOCKER_TLS_VERIFY: "1"
+    TESTCONTAINERS_RYUK_DISABLED: "true"
+    CGO_ENABLED: "1"
+  cache:
+    key: "catalog-go-integration-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .go/pkg/mod/
+      - .go-cache/
+    policy: pull-push
+  before_script:
+    - cd "${CI_PROJECT_DIR}/src/catalog"
+    - |
+      # Install Docker CLI for testcontainers
+      apt-get update -qq && apt-get install -y -qq docker.io > /dev/null 2>&1 || true
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  CATALOG — Integration Tests (Testcontainers)    ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      go test ./... \
+        -v \
+        -tags=integration \
+        -count=1 \
+        -timeout=300s \
+        2>&1 | tee integration-test-output.txt
+  artifacts:
+    when: always
+    paths:
+      - src/catalog/integration-test-output.txt
+    expire_in: 30 days
+  allow_failure: true  # Integration tests may need Docker socket — allow failure
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - src/catalog/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/catalog/**/*
+  tags:
+    - docker

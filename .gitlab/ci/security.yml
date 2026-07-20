@@ -1,0 +1,320 @@
+# =============================================================================
+# SECURITY SCANNING STAGE — Production-Grade Security Pipeline
+# =============================================================================
+# Comprehensive security analysis covering:
+#   1. Gitleaks        — Hardcoded secrets/credentials detection
+#   2. SAST            — Static Application Security Testing (multi-language)
+#   3. Secret Detection— GitLab-native secret detection
+#   4. Dependency Scan — CVE scanning in Maven, Go, npm dependencies
+#   5. Container Scan  — Trivy scan of built Docker images
+#   6. License Scan    — License compliance checking
+#   7. IaC Scanning    — Terraform & Helm misconfiguration detection
+#
+# Security reports are published to GitLab Security Dashboard and MR widgets.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 1. GITLEAKS — Hardcoded Secret Detection
+# ---------------------------------------------------------------------------
+# Scans the entire repository history for leaked secrets, API keys, tokens.
+# Uses custom .gitleaks.toml config at repo root.
+# ---------------------------------------------------------------------------
+gitleaks:
+  stage: security
+  image:
+    name: zricethezav/gitleaks:v8.24.3
+    entrypoint: [""]
+  variables:
+    GIT_DEPTH: 0  # Full clone required for history scanning
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  GITLEAKS — Scanning for hardcoded secrets       ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      # Scan current commit range (MR) or full repo (branch push)
+      if [ -n "${CI_MERGE_REQUEST_TARGET_BRANCH_SHA}" ]; then
+        echo "Mode: Merge Request (incremental scan)"
+        gitleaks detect \
+          --source="${CI_PROJECT_DIR}" \
+          --config="${CI_PROJECT_DIR}/.gitleaks.toml" \
+          --report-format=json \
+          --report-path="gitleaks-report.json" \
+          --log-opts="${CI_MERGE_REQUEST_TARGET_BRANCH_SHA}..${CI_COMMIT_SHA}" \
+          --verbose
+      else
+        echo "Mode: Branch push (full scan)"
+        gitleaks detect \
+          --source="${CI_PROJECT_DIR}" \
+          --config="${CI_PROJECT_DIR}/.gitleaks.toml" \
+          --report-format=json \
+          --report-path="gitleaks-report.json" \
+          --verbose
+      fi
+
+      echo ""
+      echo "✅ No secrets detected"
+  artifacts:
+    when: always
+    paths:
+      - gitleaks-report.json
+    expire_in: 90 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# 2. SAST — Static Application Security Testing
+# ---------------------------------------------------------------------------
+# GitLab-managed SAST scans multiple languages simultaneously:
+#   - SpotBugs:  Java (cart, orders, ui)
+#   - Gosec:     Go (catalog)
+#   - NodeJsScan + Semgrep: Node.js/TypeScript (checkout)
+#
+# Results appear in the GitLab Security Dashboard and MR widget.
+# ---------------------------------------------------------------------------
+sast:
+  stage: security
+  variables:
+    SAST_EXCLUDED_PATHS: >-
+      ATTRIBUTION.md,
+      .mvn/,
+      node_modules/,
+      .go/,
+      vendor/,
+      terraform/.terraform/,
+      docs/
+    # SpotBugs configuration for Java services
+    SAST_JAVA_VERSION: "21"
+    # Semgrep configuration
+    SEMGREP_RULES: >-
+      p/ci
+      p/java
+      p/golang
+      p/javascript
+      p/typescript
+      p/owasp-top-ten
+      p/security-audit
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# Include GitLab-managed SAST template
+# This auto-detects languages and runs appropriate analyzers
+include:
+  - template: Security/SAST.gitlab-ci.yml
+
+# ---------------------------------------------------------------------------
+# 3. SECRET DETECTION — GitLab-Native
+# ---------------------------------------------------------------------------
+# Runs alongside Gitleaks for defense-in-depth. GitLab's secret detection
+# uses different patterns and integrates with the Security Dashboard.
+# ---------------------------------------------------------------------------
+secret_detection:
+  stage: security
+  variables:
+    SECRET_DETECTION_EXCLUDED_PATHS: >-
+      ATTRIBUTION.md,
+      go.sum,
+      package-lock.json,
+      yarn.lock,
+      .mvn/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# 4. DEPENDENCY SCANNING — CVE Detection in Dependencies
+# ---------------------------------------------------------------------------
+# Scans all dependency manifests for known vulnerabilities:
+#   - pom.xml      → Maven Central CVEs (cart, orders, ui)
+#   - go.mod       → Go module CVEs (catalog)
+#   - package.json → npm CVEs (checkout)
+#   - yarn.lock    → Yarn lockfile CVEs (checkout)
+# ---------------------------------------------------------------------------
+dependency_scanning:
+  stage: security
+  image:
+    name: aquasec/trivy:0.62.1
+    entrypoint: [""]
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  DEPENDENCY SCANNING — All Service Manifests     ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      SCAN_FAILED=0
+
+      for service in cart catalog checkout orders ui; do
+        echo ""
+        echo "━━━ Scanning src/${service} dependencies ━━━"
+
+        trivy fs \
+          --scanners vuln \
+          --severity HIGH,CRITICAL \
+          --format table \
+          --exit-code 0 \
+          "${CI_PROJECT_DIR}/src/${service}" || true
+
+        # Generate JSON report per service
+        trivy fs \
+          --scanners vuln \
+          --severity HIGH,CRITICAL \
+          --format json \
+          --output "dependency-scan-${service}.json" \
+          --exit-code 0 \
+          "${CI_PROJECT_DIR}/src/${service}" || true
+      done
+
+      # Fail only on CRITICAL
+      for service in cart catalog checkout orders ui; do
+        trivy fs \
+          --scanners vuln \
+          --severity CRITICAL \
+          --exit-code 1 \
+          --quiet \
+          "${CI_PROJECT_DIR}/src/${service}" || SCAN_FAILED=1
+      done
+
+      if [ "${SCAN_FAILED}" = "1" ]; then
+        echo "❌ CRITICAL vulnerabilities found in dependencies!"
+        exit 1
+      fi
+
+      echo ""
+      echo "✅ No CRITICAL dependency vulnerabilities found"
+  artifacts:
+    when: always
+    paths:
+      - dependency-scan-*.json
+    expire_in: 90 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# 5. CONTAINER SCANNING — Post-Build Image Vulnerability Scan
+# ---------------------------------------------------------------------------
+# Defined per-service in build.yml using .template-container-scan
+# Each service gets its own scan job that runs after the image is built.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 6. LICENSE COMPLIANCE SCANNING
+# ---------------------------------------------------------------------------
+# Checks all dependencies for restrictive licenses (GPL, AGPL, etc.)
+# that could conflict with commercial distribution.
+# ---------------------------------------------------------------------------
+license_scanning:
+  stage: security
+  image:
+    name: aquasec/trivy:0.62.1
+    entrypoint: [""]
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  LICENSE COMPLIANCE — Scanning All Services      ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      for service in cart catalog checkout orders ui; do
+        echo ""
+        echo "━━━ Scanning src/${service} licenses ━━━"
+        trivy fs \
+          --scanners license \
+          --severity HIGH,CRITICAL \
+          --format table \
+          --exit-code 0 \
+          "${CI_PROJECT_DIR}/src/${service}" || true
+      done
+  artifacts:
+    when: always
+    expire_in: 90 days
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# 7. INFRASTRUCTURE-AS-CODE (IaC) SCANNING
+# ---------------------------------------------------------------------------
+# Scans Terraform files and Helm charts for security misconfigurations
+# using Trivy's built-in IaC scanner (Checkov/tfsec compatible rules).
+# ---------------------------------------------------------------------------
+iac_scanning:
+  stage: security
+  image:
+    name: aquasec/trivy:0.62.1
+    entrypoint: [""]
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  IaC SCANNING — Terraform & Helm Charts          ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      echo "━━━ Scanning Terraform configurations ━━━"
+      trivy config \
+        --severity HIGH,CRITICAL \
+        --format table \
+        --exit-code 0 \
+        "${CI_PROJECT_DIR}/terraform/" || true
+
+      echo ""
+      echo "━━━ Scanning Helm charts ━━━"
+      for service in cart catalog checkout orders ui; do
+        echo "  → src/${service}/chart/"
+        trivy config \
+          --severity HIGH,CRITICAL \
+          --format table \
+          --exit-code 0 \
+          "${CI_PROJECT_DIR}/src/${service}/chart/" || true
+      done
+
+      echo ""
+      echo "━━━ Scanning Kubernetes manifests ━━━"
+      trivy config \
+        --severity HIGH,CRITICAL \
+        --format table \
+        --exit-code 0 \
+        "${CI_PROJECT_DIR}/k8s/" || true
+
+      echo ""
+      echo "━━━ Scanning ArgoCD manifests ━━━"
+      trivy config \
+        --severity HIGH,CRITICAL \
+        --format table \
+        --exit-code 0 \
+        "${CI_PROJECT_DIR}/argocd/" || true
+
+      # Generate combined JSON report
+      trivy config \
+        --severity HIGH,CRITICAL \
+        --format json \
+        --output "iac-scan-report.json" \
+        --exit-code 0 \
+        "${CI_PROJECT_DIR}/terraform/" || true
+  artifacts:
+    when: always
+    paths:
+      - iac-scan-report.json
+    expire_in: 90 days
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - terraform/**/*
+        - src/*/chart/**/*
+        - k8s/**/*
+        - argocd/**/*
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  tags:
+    - docker

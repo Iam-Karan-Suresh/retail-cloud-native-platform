@@ -1,0 +1,7 @@
+apiVersion: v2
+name: retail-store-sample-catalog-chart
+description: >-
+  A Helm chart for the Retail cloud native platform application catalog
+  service
+type: application
+version: 1.2.2

@@ -1,0 +1,56 @@
+# =============================================================================
+# SPOT RESILIENCE GUIDE — How This Project Handles Spot Instances
+# =============================================================================
+#
+# This file documents the scheduling strategy applied to each microservice.
+# All values are configured in each service's chart/values.yaml.
+#
+# =============================================================================
+# SERVICE PLACEMENT MATRIX
+# =============================================================================
+#
+# ┌─────────────────────┬───────────┬─────────────┬─────────┬──────────────┐
+# │ Service             │ Node Type │ Replicas    │ PDB     │ Stateful?    │
+# ├─────────────────────┼───────────┼─────────────┼─────────┼──────────────┤
+# │ UI (frontend)       │ SPOT      │ 4 replicas  │ min: 3  │ No           │
+# │ Cart API            │ SPOT      │ 3 replicas  │ min: 2  │ No           │
+# │ Catalog API         │ SPOT      │ 3 replicas  │ min: 2  │ No           │
+# │ Checkout API        │ SPOT      │ 3 replicas  │ min: 2  │ No           │
+# │ Orders API          │ SPOT      │ 3 replicas  │ min: 2  │ No           │
+# ├─────────────────────┼───────────┼─────────────┼─────────┼──────────────┤
+# │ MySQL (catalog)     │ ON-DEMAND │ 1 replica   │ N/A     │ YES (data)   │
+# │ PostgreSQL (orders) │ ON-DEMAND │ 1 replica   │ N/A     │ YES (data)   │
+# │ RabbitMQ (orders)   │ ON-DEMAND │ 1 replica   │ N/A     │ YES (msgs)   │
+# │ Redis (checkout)    │ ON-DEMAND │ 1 replica   │ N/A     │ YES (cache)  │
+# │ DynamoDB (cart)     │ ON-DEMAND │ 1 replica   │ N/A     │ YES (data)   │
+# ├─────────────────────┼───────────┼─────────────┼─────────┼──────────────┤
+# │ CoreDNS             │ ON-DEMAND │ 2 replicas  │ N/A     │ No (system)  │
+# │ Traefik Gateway     │ ON-DEMAND │ 2 replicas  │ N/A     │ No (system)  │
+# │ Karpenter           │ ON-DEMAND │ 2 replicas  │ N/A     │ No (system)  │
+# │ ArgoCD              │ ON-DEMAND │ 2 replicas  │ N/A     │ No (system)  │
+# │ KEDA                │ ON-DEMAND │ 1 replica   │ N/A     │ No (system)  │
+# │ Prometheus/Grafana  │ ON-DEMAND │ varies      │ N/A     │ No (system)  │
+# └─────────────────────┴───────────┴─────────────┴─────────┴──────────────┘
+#
+# =============================================================================
+# RULES:
+# =============================================================================
+#
+# 1. STATELESS services → Karpenter-provisioned nodes (spot-preferred, 70-80% savings)
+# 2. STATEFUL services → On-Demand system nodes (data safety)
+# 3. SYSTEM services   → On-Demand system nodes (cluster stability)
+#
+# Spot services get:
+#   - nodeSelector: { role: spot-worker } (or scheduled on Karpenter nodes)
+#   - Soft node affinity for spot lifecycle
+#   - TopologySpreadConstraints across AZs
+#   - PodDisruptionBudget (Karpenter respects PDBs during drain/consolidation)
+#   - Multiple replicas (min 3) for availability
+#
+# Stateful services get:
+#   - nodeSelector: { role: system }
+#   - Toleration for CriticalAddonsOnly taint
+#   - Single replica (stateful workload)
+#   - PersistentVolume support
+#
+# =============================================================================

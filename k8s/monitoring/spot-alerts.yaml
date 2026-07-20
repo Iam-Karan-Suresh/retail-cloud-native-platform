@@ -1,0 +1,96 @@
+# =============================================================================
+# PROMETHEUS ALERTING RULES — Spot Interruption Monitoring
+# =============================================================================
+# These rules fire alerts when:
+#   1. A spot node is being disrupted by Karpenter (warning — expected behavior)
+#   2. Interruption rate is abnormally high (critical — check instance diversity)
+#   3. Karpenter controller is not running (critical — cluster can't scale)
+#   4. Pod eviction is failing (critical — workloads stuck on dying node)
+# =============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: spot-interruption-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # =========================================================================
+    # SPOT NODE LIFECYCLE ALERTS
+    # =========================================================================
+    - name: spot-interruption
+      rules:
+        # Warning: A Karpenter node is being disrupted (normal operational event)
+        - alert: KarpenterNodeDisrupting
+          expr: increase(karpenter_nodeclaims_disrupted_total[5m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Karpenter is disrupting a node (consolidation or interruption)"
+            description: "Karpenter detected a disruption event and is replacing a node. This is expected behavior — Karpenter handles spot interruptions and node consolidation automatically."
+            runbook_url: "https://github.com/your-org/runbooks/blob/main/spot-draining.md"
+
+        # Critical: Too many interruptions — you need more instance type diversity
+        - alert: HighSpotInterruptionRate
+          expr: rate(karpenter_nodeclaims_disrupted_total{reason="interruption"}[15m]) > 0.3
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "High spot interruption rate detected"
+            description: |
+              More than 0.3 interruptions/second over 15 minutes.
+              This indicates your instance type pool lacks diversity.
+              Action: Add more instance families to the Karpenter NodePool requirements.
+
+        # Critical: Karpenter controller is not running — cluster can't scale
+        - alert: KarpenterNotRunning
+          expr: absent(up{job="karpenter"})
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Karpenter controller is DOWN"
+            description: |
+              Karpenter is not running. Consequences:
+              - No new nodes will be provisioned for pending pods
+              - Spot interruptions will NOT trigger replacement capacity
+              - Node consolidation is halted
+              This is a P1 incident — restore Karpenter immediately.
+
+    # =========================================================================
+    # POD SCHEDULING HEALTH
+    # =========================================================================
+    - name: spot-scheduling
+      rules:
+        # Warning: Pods pending for too long — might be capacity issue
+        - alert: PodsPendingOnSpotNodes
+          expr: |
+            count(kube_pod_status_phase{phase="Pending"} == 1) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $value }} pods are stuck in Pending state"
+            description: |
+              Multiple pods are pending. This could mean:
+              1. Karpenter NodePool resource limits have been reached
+              2. No spot capacity available for the requested instance types
+              3. Resource requests are too high for available instance types
+              4. Karpenter controller may not be running
+
+        # Critical: PDB is blocking eviction — drain is stuck
+        - alert: PDBBlockingEviction
+          expr: kube_poddisruptionbudget_status_pod_disruptions_allowed == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PDB {{ $labels.poddisruptionbudget }} is blocking pod evictions"
+            description: |
+              No disruptions are allowed by this PDB, meaning Karpenter cannot
+              consolidate or drain pods from a node that needs to be replaced.
+              Check if enough healthy replicas are running.

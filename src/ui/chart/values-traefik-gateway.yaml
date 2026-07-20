@@ -1,0 +1,72 @@
+# =============================================================================
+# Custom values for UI with Traefik Gateway API
+# =============================================================================
+# This file replaces values-nginx-ingress.yaml for Traefik Gateway API routing.
+# Usage: helm install retail-store-ui ./chart -f values-traefik-gateway.yaml
+# =============================================================================
+replicaCount: 1
+
+# Service Account Configuration
+serviceAccount:
+  create: true
+  name: "retail-store-ui-sa"
+
+service:
+  type: ClusterIP
+  port: 80
+
+# NGINX Ingress — DISABLED (replaced by Gateway API)
+ingress:
+  enabled: false
+ingresses: []
+
+# Traefik Gateway API Configuration
+# NOTE: Set hostname and TLS only when you own a domain with DNS
+# pointing to the ELB. Without a valid domain, leave hostname empty
+# and TLS disabled — the app will be accessible via ELB DNS directly.
+gatewayAPI:
+  enabled: true
+  gatewayClassName: "traefik"
+  hostname: ""   # Set to your domain, e.g. "retail-store.yourdomain.com"
+  requestTimeout: "600s"
+  requestBodySize: true
+  maxRequestBodyBytes: 8388608
+  httpToHttpsRedirect: false
+  tls:
+    enabled: false
+    hostname: ""   # Set to your domain, e.g. "retail-store.yourdomain.com"
+    secretName: "retail-store-tls"
+  certManager:
+    enabled: false
+
+# Application configuration
+app:
+  endpoints:
+    catalog: http://catalog:80
+    carts: http://carts:80
+    checkout: http://checkout:80
+    orders: http://orders:80
+
+# Resources
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 128m
+    memory: 512Mi
+
+# Metrics
+metrics:
+  enabled: true
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/actuator/prometheus"
+
+# Cert Manager Configuration
+certManager:
+  createClusterIssuer: true
+  email: karansuresh.info@gmail.com
+  clusterIssuerName: "letsencrypt-prod"
+  server: "https://acme-v02.api.letsencrypt.org/directory"
+  privateKeySecretName: "letsencrypt-prod-key"

@@ -1,0 +1,175 @@
+# =============================================================================
+# NodePool — Defines WHAT Karpenter is allowed to provision
+# =============================================================================
+# This is the "policy" layer. It tells Karpenter:
+#   - Which instance families/sizes/architectures are acceptable
+#   - Capacity type preference (spot vs on-demand)
+#   - Total resource budget (prevents runaway scaling)
+#   - Disruption/consolidation rules (when to replace/remove nodes)
+#
+# MIGRATION NOTE:
+# ─────────────────────────────────────────────────────────────────────────────
+# This NodePool is deployed WITH a migration taint initially. The rollout
+# sequence is:
+#
+#   STEP 1: Deploy Karpenter + this NodePool (with taint below)
+#           → Karpenter is running but no workloads land on its nodes
+#
+#   STEP 2: Deploy a test pod with the matching toleration
+#           → Validates Karpenter can provision nodes end-to-end
+#           → Check: kubectl get nodeclaim — should show a new node
+#
+#   STEP 3: Remove the karpenter.sh/migration taint from this NodePool
+#           → kubectl edit nodepool default OR re-apply without the taint
+#           → New pods will now schedule on Karpenter-provisioned nodes
+#
+#   STEP 4: Cordon + drain old ASG spot_workers nodes ONE AT A TIME
+#           → kubectl cordon <node-name>
+#           → kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data
+#           → Karpenter auto-provisions replacement capacity as pods go pending
+#           → Monitor: kubectl get nodes -w  (watch new nodes come up)
+#
+#   STEP 5: Scale ASG desired count to 0
+#           → aws autoscaling update-auto-scaling-group \
+#               --auto-scaling-group-name <asg-name> \
+#               --desired-capacity 0 --min-size 0
+#           → Or update Terraform: desired_size = 0, min_size = 0
+#
+#   STEP 6: Remove NTH Helm release from Terraform
+#           → Delete or comment out helm_release.node_termination_handler
+#           → terraform apply
+#
+#   STEP 7: Remove ASG lifecycle hook from Terraform
+#           → Delete aws_autoscaling_lifecycle_hook.spot_termination
+#           → Optionally remove data.aws_autoscaling_groups.spot_workers
+#           → terraform apply
+#
+#   STEP 8: (Optional) Remove the spot_workers nodegroup from main.tf
+#           → Remove the spot_workers block from eks_managed_node_groups
+#           → terraform apply
+#
+# DO NOT skip steps or reorder. Each step validates the previous one.
+# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: default
+  labels:
+    app.kubernetes.io/managed-by: karpenter
+    app.kubernetes.io/part-of: retail-store
+spec:
+  # ---------------------------------------------------------------------------
+  # TEMPLATE — defines the node characteristics
+  # ---------------------------------------------------------------------------
+  template:
+    metadata:
+      labels:
+        role: karpenter-worker
+        node.kubernetes.io/lifecycle: spot
+    spec:
+      # Reference the EC2NodeClass defined in karpenter-nodeclass.yaml
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+
+      # -----------------------------------------------------------------------
+      # MIGRATION TAINT — remove after validating Karpenter provisioning
+      # -----------------------------------------------------------------------
+      # This taint prevents workloads from scheduling on Karpenter nodes
+      # until you explicitly remove it. This gives you a safe window to
+      # validate that Karpenter can provision nodes before moving traffic.
+      #
+      # TO REMOVE: delete the taints block below and re-apply this manifest
+      # -----------------------------------------------------------------------
+      taints:
+        - key: karpenter.sh/migration
+          value: "true"
+          effect: NoSchedule
+
+      # -----------------------------------------------------------------------
+      # INSTANCE REQUIREMENTS — wide family selection for spot diversity
+      # -----------------------------------------------------------------------
+      # Karpenter evaluates ALL combinations and picks the cheapest available
+      # spot instance that fits the pending pod's resource requests.
+      #
+      # 10 instance families × multiple sizes = 50+ instance type candidates
+      # This diversity is critical for spot — more candidates = fewer
+      # interruptions and better pricing.
+      # -----------------------------------------------------------------------
+      requirements:
+        # Instance families — production-grade, current-gen (plus m4 for depth)
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values:
+            - m5
+            - m5a
+            - m5d
+            - m6i
+            - m6a
+            - m4
+            - r5
+            - r6i
+            - c5
+            - c6i
+
+        # Architecture — amd64 only (ARM would need separate NodeClass/AMI)
+        - key: kubernetes.io/arch
+          operator: In
+          values:
+            - amd64
+
+        # Capacity type — both spot and on-demand allowed
+        # Karpenter will prefer spot due to the weight field below
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+            - spot
+            - on-demand
+
+  # ---------------------------------------------------------------------------
+  # CAPACITY WEIGHTS — prefer spot (80%) over on-demand (20%)
+  # ---------------------------------------------------------------------------
+  # Karpenter uses weights to influence capacity-type selection.
+  # Higher weight = preferred. When spot capacity is available, Karpenter
+  # will always choose it. On-demand is the fallback.
+  # ---------------------------------------------------------------------------
+  weight: 80
+
+  # ---------------------------------------------------------------------------
+  # RESOURCE LIMITS — cluster-wide budget for Karpenter-managed nodes
+  # ---------------------------------------------------------------------------
+  # Prevents runaway scaling if a deployment has a bug or unbounded HPA.
+  # These limits apply across ALL nodes provisioned by this NodePool.
+  # ---------------------------------------------------------------------------
+  limits:
+    cpu: "1000"
+    memory: 4000Gi
+
+  # ---------------------------------------------------------------------------
+  # DISRUPTION POLICY — controls consolidation and node replacement
+  # ---------------------------------------------------------------------------
+  disruption:
+    # WhenUnderutilized: Karpenter actively consolidates by replacing
+    # underutilized nodes with smaller/fewer ones. This maximizes bin-packing
+    # and minimizes cost.
+    consolidationPolicy: WhenUnderutilized
+
+    # How long a node must be underutilized before Karpenter acts
+    consolidateAfter: 30s
+
+    # Disruption budgets — safety guardrails
+    budgets:
+      # Default: allow up to 20% of nodes to be disrupted simultaneously
+      # This prevents cascading disruptions from overwhelming the cluster
+      - nodes: "20%"
+
+      # Zero-disruption maintenance window: 02:00–04:00 UTC daily
+      # During this window, Karpenter will NOT voluntarily disrupt any nodes.
+      # Use case: batch jobs, nightly ETL, or backup windows that must not
+      # be interrupted by consolidation.
+      - nodes: "0"
+        schedule: "0 2 * * *"
+        duration: 2h

@@ -1,0 +1,182 @@
+# =============================================================================
+# NOTIFICATIONS STAGE — Pipeline & Deployment Notifications
+# =============================================================================
+# Sends notifications on pipeline success/failure via webhook.
+# Supports Slack, Microsoft Teams, Discord, and generic webhooks.
+#
+# Configuration:
+#   Set WEBHOOK_URL as a CI/CD variable (Settings → CI/CD → Variables)
+#   Optionally set SLACK_WEBHOOK_URL for Slack-specific formatting
+#
+# Message format adapts based on pipeline outcome and stage.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# PIPELINE SUCCESS — Notify on successful pipeline completion
+# ---------------------------------------------------------------------------
+notify-success:
+  stage: notify
+  extends: .template-notify
+  variables:
+    NOTIFICATION_MESSAGE: |
+      ✅ *Pipeline Succeeded*
+      
+      *Project:* ${CI_PROJECT_NAME}
+      *Branch:* ${CI_COMMIT_REF_NAME}
+      *Commit:* ${CI_COMMIT_SHORT_SHA} — ${CI_COMMIT_TITLE}
+      *Author:* ${GITLAB_USER_NAME}
+      *Pipeline:* <${CI_PIPELINE_URL}|#${CI_PIPELINE_ID}>
+      *Duration:* ${CI_PIPELINE_DURATION}s
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+    - if: $CI_COMMIT_TAG
+      when: on_success
+
+# ---------------------------------------------------------------------------
+# PIPELINE FAILURE — Notify on pipeline failure
+# ---------------------------------------------------------------------------
+notify-failure:
+  stage: notify
+  extends: .template-notify
+  variables:
+    NOTIFICATION_MESSAGE: |
+      ❌ *Pipeline Failed*
+      
+      *Project:* ${CI_PROJECT_NAME}
+      *Branch:* ${CI_COMMIT_REF_NAME}
+      *Commit:* ${CI_COMMIT_SHORT_SHA} — ${CI_COMMIT_TITLE}
+      *Author:* ${GITLAB_USER_NAME}
+      *Pipeline:* <${CI_PIPELINE_URL}|#${CI_PIPELINE_ID}>
+      *Failed Job:* ${CI_JOB_NAME}
+      
+      ⚠️ Action required — check the pipeline for details.
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_failure
+    - if: $CI_COMMIT_TAG
+      when: on_failure
+
+# ---------------------------------------------------------------------------
+# DEPLOYMENT NOTIFICATION — Production deploy notification
+# ---------------------------------------------------------------------------
+notify-deployment:
+  stage: notify
+  extends: .template-notify
+  variables:
+    DEPLOY_ENVIRONMENT: production
+    NOTIFICATION_MESSAGE: |
+      🚀 *Production Deployment*
+      
+      *Project:* ${CI_PROJECT_NAME}
+      *Version:* ${CI_COMMIT_SHORT_SHA}
+      *Environment:* ${DEPLOY_ENVIRONMENT}
+      *Deployed by:* ${GITLAB_USER_NAME}
+      *Pipeline:* <${CI_PIPELINE_URL}|#${CI_PIPELINE_ID}>
+      
+      *Services updated:*
+      • cart • catalog • checkout • orders • ui
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_success
+  needs:
+    - job: deploy-production
+      optional: true
+
+# ---------------------------------------------------------------------------
+# SECURITY ALERT — Notify on security scan findings
+# ---------------------------------------------------------------------------
+notify-security:
+  stage: notify
+  extends: .template-notify
+  variables:
+    NOTIFICATION_MESSAGE: |
+      🔒 *Security Scan Results*
+      
+      *Project:* ${CI_PROJECT_NAME}
+      *Branch:* ${CI_COMMIT_REF_NAME}
+      *Pipeline:* <${CI_PIPELINE_URL}|#${CI_PIPELINE_ID}>
+      
+      Review the Security Dashboard for detailed findings.
+      Pipeline: ${CI_PIPELINE_URL}/security
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: on_failure
+  needs:
+    - job: gitleaks
+      optional: true
+    - job: dependency_scanning
+      optional: true
+
+# ---------------------------------------------------------------------------
+# SLACK-SPECIFIC NOTIFICATION (Optional — Rich Formatting)
+# ---------------------------------------------------------------------------
+# If SLACK_WEBHOOK_URL is set, this sends a richly formatted Slack message
+# with blocks, colors, and action buttons.
+# ---------------------------------------------------------------------------
+notify-slack-rich:
+  stage: notify
+  image: curlimages/curl:8.14.1
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - |
+      if [ -z "${SLACK_WEBHOOK_URL}" ]; then
+        echo "SLACK_WEBHOOK_URL not configured — skipping Slack notification"
+        exit 0
+      fi
+
+      # Determine color based on pipeline status
+      if [ "${CI_JOB_STATUS}" = "success" ]; then
+        COLOR="#36a64f"  # Green
+        STATUS_EMOJI="✅"
+        STATUS_TEXT="Succeeded"
+      else
+        COLOR="#ff0000"  # Red
+        STATUS_EMOJI="❌"
+        STATUS_TEXT="Failed"
+      fi
+
+      curl -sSf -X POST "${SLACK_WEBHOOK_URL}" \
+        -H "Content-Type: application/json" \
+        -d "{
+          \"attachments\": [
+            {
+              \"color\": \"${COLOR}\",
+              \"title\": \"${STATUS_EMOJI} Pipeline ${STATUS_TEXT} — ${CI_PROJECT_NAME}\",
+              \"title_link\": \"${CI_PIPELINE_URL}\",
+              \"fields\": [
+                {
+                  \"title\": \"Branch\",
+                  \"value\": \"${CI_COMMIT_REF_NAME}\",
+                  \"short\": true
+                },
+                {
+                  \"title\": \"Commit\",
+                  \"value\": \"<${CI_PROJECT_URL}/-/commit/${CI_COMMIT_SHA}|${CI_COMMIT_SHORT_SHA}>\",
+                  \"short\": true
+                },
+                {
+                  \"title\": \"Author\",
+                  \"value\": \"${GITLAB_USER_NAME}\",
+                  \"short\": true
+                },
+                {
+                  \"title\": \"Duration\",
+                  \"value\": \"${CI_PIPELINE_DURATION:-N/A}s\",
+                  \"short\": true
+                }
+              ],
+              \"footer\": \"GitLab CI/CD | Retail Cloud Native Platform\",
+              \"ts\": $(date +%s)
+            }
+          ]
+        }"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: always
+    - if: $CI_COMMIT_TAG
+      when: always
+  allow_failure: true
+  tags:
+    - docker

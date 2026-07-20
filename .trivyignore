@@ -1,0 +1,13 @@
+# =============================================================================
+# TRIVY IGNORE — Accepted Container Vulnerabilities
+# =============================================================================
+# Each entry MUST have a comment explaining WHY it's acceptable and WHEN
+# it should be revisited. Entries without justification will be removed.
+#
+# Format: CVE-YYYY-NNNNN
+# Reference: https://aquasecurity.github.io/trivy/latest/docs/configuration/filtering/
+# =============================================================================
+
+# --- Example entries (uncomment and replace when actual CVEs need suppression) ---
+# CVE-2024-XXXXX  # Low severity in libfoo; no network exposure; revisit Q3 2025
+# CVE-2024-YYYYY  # False positive — function not called in our code path

@@ -1,0 +1,208 @@
+# =============================================================================
+# SPOT-OPTIMIZED VALUES for UI Service
+# =============================================================================
+# UI is a stateless Java/Spring Boot frontend. It renders pages and proxies
+# API calls to backend services. It holds ZERO local state.
+# PERFECT candidate for spot instances.
+#
+# This is the user-facing service — we run MORE replicas (4) with
+# topology spread to guarantee zero-downtime even during spot reclaims.
+# =============================================================================
+
+# Default values for ui.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 4
+image:
+  repository: ghcr.io/iam-karan-suresh/retail-store-sample-ui
+  pullPolicy: Always
+  tag: '1.3.0'
+imagePullSecrets: []
+nameOverride: ''
+fullnameOverride: ''
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ''
+podAnnotations: {}
+podSecurityContext:
+  fsGroup: 1000
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+    add:
+      - NET_BIND_SERVICE
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+service:
+  type: ClusterIP
+  port: 80
+  # annotations: {}
+  # loadBalancerClass: ""
+  # nodePort: 30000
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 128m
+    memory: 512Mi
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 50
+
+# ---------------------------------------------------------------------------
+# SPOT INSTANCE SCHEDULING
+# UI is the most visible service — but it's stateless, so spot is safe.
+# With 4 replicas spread across AZs, users won't notice a spot reclaim.
+# ---------------------------------------------------------------------------
+nodeSelector:
+  role: spot-worker
+
+tolerations: []
+
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - key: 'node.kubernetes.io/lifecycle'
+              operator: In
+              values: ['spot']
+
+# ---------------------------------------------------------------------------
+# TOPOLOGY SPREAD — spread across zones AND nodes
+# User-facing service needs maximum fault isolation
+# ---------------------------------------------------------------------------
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: retail-store-sample-ui-chart
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: retail-store-sample-ui-chart
+
+metrics:
+  enabled: true
+  podAnnotations:
+    prometheus.io/scrape: 'true'
+    prometheus.io/port: '8080'
+    prometheus.io/path: '/actuator/prometheus'
+configMap:
+  create: true
+  name: # if blank this will be generated
+app:
+  # theme: default
+  endpoints:
+    catalog: http://retail-store-catalog:80
+    carts: http://retail-store-cart-carts:80
+    orders: http://retail-store-orders:80
+    checkout: http://retail-store-checkout:80
+  chat:
+    enabled: false
+    provider: ''
+    model: ''
+    # temperature: 0.7
+    # maxTokens: 300
+    # prompt: |
+    #   This will override the default system prompt
+    bedrock:
+      region: ''
+    openai:
+      baseUrl: ''
+      # apiKey: ""
+# ---------------------------------------------------------------------------
+# LEGACY NGINX INGRESS (DISABLED — kept for rollback reference)
+# Replaced by Traefik Gateway API below
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: 'nginx'
+  annotations: {}
+  tls: []
+  hosts: []
+ingresses: []
+
+# =============================================================================
+# TRAEFIK GATEWAY API — Replaces NGINX Ingress Controller
+# =============================================================================
+# Gateway API (gateway.networking.k8s.io/v1) is the Kubernetes-native successor
+# to Ingress. Benefits over NGINX Ingress:
+#   1. Role-oriented: infra team owns Gateway, app team owns HTTPRoute
+#   2. Portable: switch providers (Traefik→Envoy) without changing routes
+#   3. Richer: header-based routing, traffic splitting, timeouts built-in
+#   4. Standard: graduated GA in Kubernetes 1.27+
+#
+# Traefik middleware CRDs replace nginx.ingress.kubernetes.io/* annotations
+# =============================================================================
+gatewayAPI:
+  enabled: true
+  gatewayClassName: 'traefik'
+  # Hostname for direct ELB access (leave empty for wildcard)
+  hostname: ''
+  # Request timeout (replaces proxy-read/send-timeout annotations)
+  requestTimeout: '600s'
+  # Max request body size in bytes (replaces proxy-body-size: 8m)
+  requestBodySize: true
+  maxRequestBodyBytes: 8388608 # 8 MiB
+  # HTTP → HTTPS redirect (replaces ssl-redirect annotation)
+  httpToHttpsRedirect: false
+  # TLS configuration (replaces ingress.tls + domain ingress)
+  # NOTE: Enable TLS and set hostname ONLY when you own a domain and have
+  # DNS pointing to the ELB. Without a valid domain, cert-manager ACME
+  # validation will fail and Traefik will reject non-matching hostnames.
+  tls:
+    enabled: false
+    hostname: '' # Set to your domain, e.g. "retail-store.yourdomain.com"
+    secretName: 'tls-secret'
+  # Cert-manager integration
+  certManager:
+    enabled: true
+
+# Cert Manager Configuration
+certManager:
+  createClusterIssuer: true
+  email: karansuresh.info@gmail.com
+  clusterIssuerName: 'letsencrypt-prod'
+  server: 'https://acme-v02.api.letsencrypt.org/directory'
+  privateKeySecretName: 'letsencrypt-prod-key'
+istio:
+  enabled: false
+  hosts: []
+
+opentelemetry:
+  enabled: true
+  instrumentation: ''
+  env:
+    OTEL_SERVICE_NAME: ui
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability.svc.cluster.local:4318
+    OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    OTEL_PROPAGATORS: tracecontext,baggage
+    OTEL_TRACES_SAMPLER: always_on
+
+
+# ---------------------------------------------------------------------------
+# POD DISRUPTION BUDGET — stricter for user-facing service
+# With 4 replicas, keep 3 running at all times → only 1 eviction at a time
+# ---------------------------------------------------------------------------
+
+# POD DISRUPTION BUDGET
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 3
+  maxUnavailable: 1

@@ -1,0 +1,107 @@
+# =============================================================================
+# EC2NodeClass — Defines HOW Karpenter-provisioned nodes are configured
+# =============================================================================
+# This maps to the "launch template" concept in ASG-land, but is more
+# flexible. Karpenter uses this to know:
+#   - Which subnets to launch into (discovered by tag)
+#   - Which security groups to attach (discovered by tag)
+#   - Which AMI to use (AL2023, resolved via SSM parameter)
+#   - Which instance profile grants the node its IAM permissions
+#
+# IMPORTANT: subnetSelectorTerms and securityGroupSelectorTerms use the
+# same eks:cluster-name tag that the EKS module already applies to
+# subnets and security groups. No new tagging is required.
+# =============================================================================
+
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+  labels:
+    app.kubernetes.io/managed-by: karpenter
+    app.kubernetes.io/part-of: retail-store
+spec:
+  # ---------------------------------------------------------------------------
+  # AMI SELECTION — Amazon Linux 2023, matching the cluster's K8s version
+  # ---------------------------------------------------------------------------
+  # Uses the SSM alias to automatically resolve the latest AL2023 EKS-optimized
+  # AMI for the cluster's Kubernetes version. AL2023 uses cgroup v2 by default,
+  # which is required for Kubernetes 1.35+. This ensures nodes always boot
+  # with a patched, compatible AMI without manual AMI ID management.
+  # ---------------------------------------------------------------------------
+  amiFamily: AL2023
+  amiSelectorTerms:
+    - alias: al2023@latest
+
+  # ---------------------------------------------------------------------------
+  # SUBNET DISCOVERY — same private subnets as the existing nodegroup
+  # ---------------------------------------------------------------------------
+  # The EKS module already tags private subnets with:
+  #   kubernetes.io/cluster/<cluster-name> = shared
+  # Karpenter uses this tag to discover valid subnets.
+  # ---------------------------------------------------------------------------
+  subnetSelectorTerms:
+    - tags:
+        kubernetes.io/cluster/${CLUSTER_NAME}: shared
+        kubernetes.io/role/internal-elb: "1"
+
+  # ---------------------------------------------------------------------------
+  # SECURITY GROUP DISCOVERY — same SG as existing nodegroup
+  # ---------------------------------------------------------------------------
+  # The EKS module creates a cluster security group and tags it with:
+  #   eks:cluster-name = <cluster-name>
+  # Karpenter uses this to attach the correct security group to new nodes.
+  # ---------------------------------------------------------------------------
+  securityGroupSelectorTerms:
+    - tags:
+        eks:cluster-name: ${CLUSTER_NAME}
+
+  # ---------------------------------------------------------------------------
+  # INSTANCE PROFILE — reuse the same IAM instance profile as existing nodes
+  # ---------------------------------------------------------------------------
+  # This is the instance profile that grants nodes permissions to:
+  #   - Pull ECR images
+  #   - Register with the EKS cluster
+  #   - Publish CloudWatch logs (if enabled)
+  #
+  # Replace ${NODE_INSTANCE_PROFILE_NAME} with the actual instance profile
+  # name from: terraform output -raw eks_node_instance_profile
+  # ---------------------------------------------------------------------------
+  role: ${NODE_ROLE_NAME}
+
+  # ---------------------------------------------------------------------------
+  # METADATA OPTIONS — IMDSv2 enforced (matches existing nodegroup config)
+  # ---------------------------------------------------------------------------
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+
+  # ---------------------------------------------------------------------------
+  # BLOCK DEVICE MAPPINGS — root volume configuration
+  # ---------------------------------------------------------------------------
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+
+  # ---------------------------------------------------------------------------
+  # USER DATA — additional bootstrapping (optional)
+  # ---------------------------------------------------------------------------
+  # Karpenter automatically generates the bootstrap script for EKS.
+  # Add custom userData here only if you need extra configuration
+  # (e.g., mounting EFS, installing agents).
+  # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # TAGS — applied to all EC2 instances launched by this NodeClass
+  # ---------------------------------------------------------------------------
+  tags:
+    Environment: ${ENVIRONMENT}
+    Project: retail-store
+    ManagedBy: karpenter
+    eks:cluster-name: ${CLUSTER_NAME}

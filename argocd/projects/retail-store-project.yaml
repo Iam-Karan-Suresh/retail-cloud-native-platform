@@ -1,0 +1,56 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: retail-store
+  namespace: argocd
+spec:
+  description: Retail Store Sample Application
+  
+  sourceRepos:
+    - 'https://github.com/Iam-Karan-Suresh/retail-cloud-native-platform'
+  
+  destinations:
+    - namespace: retail-store
+      server: https://kubernetes.default.svc
+  
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRole
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRoleBinding
+    - group: 'cert-manager.io'
+      kind: ClusterIssuer
+    - group: 'gateway.networking.k8s.io'
+      kind: GatewayClass
+  
+  namespaceResourceWhitelist:
+    - group: ''
+      kind: ConfigMap
+    - group: ''
+      kind: Secret
+    - group: ''
+      kind: Service
+    - group: ''
+      kind: ServiceAccount
+    - group: 'apps'
+      kind: Deployment
+    - group: 'apps'
+      kind: StatefulSet
+    - group: 'networking.k8s.io'
+      kind: Ingress
+    - group: 'gateway.networking.k8s.io'
+      kind: Gateway
+    - group: 'gateway.networking.k8s.io'
+      kind: HTTPRoute
+    - group: 'traefik.io'
+      kind: Middleware
+    - group: 'autoscaling'
+      kind: HorizontalPodAutoscaler
+    - group: 'keda.sh'
+      kind: ScaledObject
+    - group: 'keda.sh'
+      kind: TriggerAuthentication
+    - group: 'policy'
+      kind: PodDisruptionBudget

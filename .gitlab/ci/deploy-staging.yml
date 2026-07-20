@@ -1,0 +1,336 @@
+# =============================================================================
+# STAGING DEPLOYMENT STAGE — Deploy to Staging / Review Apps
+# =============================================================================
+# Deploys all changed services to a staging environment using Helm.
+# Feature branches get isolated review-app namespaces.
+#
+# Post-deploy:
+#   - Smoke tests (HTTP health checks)
+#   - DAST scan against staging endpoints
+#   - Auto-stop after 4 hours for feature branch environments
+#
+# Prerequisites:
+#   - KUBECONFIG CI/CD variable OR GitLab Agent for Kubernetes configured
+#   - Staging cluster accessible from GitLab Runner
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# DEPLOY STAGING — Main Branch
+# ---------------------------------------------------------------------------
+# Deploys to the `retail-store-staging` namespace.
+# Runs automatically on every merge to main.
+# ---------------------------------------------------------------------------
+deploy-staging:
+  stage: deploy-staging
+  extends: .template-helm-deploy
+  variables:
+    DEPLOY_NAMESPACE: retail-store-staging
+    DEPLOY_ENVIRONMENT: staging
+    IMAGE_TAG: "${CI_COMMIT_SHORT_SHA}"
+  environment:
+    name: staging
+    url: https://staging.retail-store.internal
+    on_stop: stop-staging
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  STAGING DEPLOYMENT — All Services               ║"
+      echo "╚══════════════════════════════════════════════════╝"
+      echo ""
+      echo "Namespace:   ${DEPLOY_NAMESPACE}"
+      echo "Image Tag:   ${IMAGE_TAG}"
+      echo "Pipeline:    ${CI_PIPELINE_URL}"
+      echo ""
+
+      # Deploy each service
+      for service in cart catalog checkout orders ui; do
+        CHART_PATH="src/${service}/chart"
+
+        if [ ! -d "${CI_PROJECT_DIR}/${CHART_PATH}" ]; then
+          echo "⚠️  Chart not found: ${CHART_PATH} — skipping"
+          continue
+        fi
+
+        echo ""
+        echo "━━━ Deploying ${service} ━━━"
+        helm upgrade --install "${service}" \
+          "${CI_PROJECT_DIR}/${CHART_PATH}" \
+          --namespace "${DEPLOY_NAMESPACE}" \
+          --create-namespace \
+          --set image.repository="${CI_REGISTRY_IMAGE}/${service}" \
+          --set image.tag="${IMAGE_TAG}" \
+          --set image.pullPolicy=Always \
+          --atomic \
+          --timeout 5m \
+          --wait \
+          --history-max 5 \
+          2>&1 | tail -20
+
+        echo "  ✅ ${service} deployed"
+      done
+
+      echo ""
+      echo "━━━ Deployment Summary ━━━"
+      kubectl -n "${DEPLOY_NAMESPACE}" get pods -o wide
+      echo ""
+      kubectl -n "${DEPLOY_NAMESPACE}" get services
+  after_script:
+    - |
+      echo ""
+      echo "━━━ Post-Deploy Health Checks ━━━"
+      for service in cart catalog checkout orders ui; do
+        kubectl -n "${DEPLOY_NAMESPACE}" rollout status deployment/"${service}" --timeout=120s 2>/dev/null \
+          && echo "  ✅ ${service} — healthy" \
+          || echo "  ⚠️  ${service} — rollout status unknown"
+      done
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: publish-charts
+      optional: true
+    - job: scan-cart
+      optional: true
+    - job: scan-catalog
+      optional: true
+    - job: scan-checkout
+      optional: true
+    - job: scan-orders
+      optional: true
+    - job: scan-ui
+      optional: true
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# STOP STAGING — Cleanup job for environment
+# ---------------------------------------------------------------------------
+stop-staging:
+  stage: deploy-staging
+  image:
+    name: alpine/helm:3.17.3
+    entrypoint: [""]
+  variables:
+    GIT_STRATEGY: none
+    DEPLOY_NAMESPACE: retail-store-staging
+  before_script:
+    - apk add --no-cache curl
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+  script:
+    - |
+      echo "Stopping staging environment..."
+      for service in cart catalog checkout orders ui; do
+        helm uninstall "${service}" -n "${DEPLOY_NAMESPACE}" 2>/dev/null || true
+      done
+      kubectl delete namespace "${DEPLOY_NAMESPACE}" --ignore-not-found=true || true
+      echo "✅ Staging environment cleaned up"
+  environment:
+    name: staging
+    action: stop
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# REVIEW APPS — Feature Branch Deployments
+# ---------------------------------------------------------------------------
+# Each feature branch gets an isolated namespace:
+#   retail-store-review-<branch-slug>
+# Auto-stops after 4 hours to save cluster resources.
+# ---------------------------------------------------------------------------
+deploy-review:
+  stage: deploy-staging
+  extends: .template-helm-deploy
+  variables:
+    DEPLOY_NAMESPACE: "retail-store-review-${CI_COMMIT_REF_SLUG}"
+    DEPLOY_ENVIRONMENT: "review/${CI_COMMIT_REF_SLUG}"
+    IMAGE_TAG: "${CI_COMMIT_SHORT_SHA}"
+  environment:
+    name: review/$CI_COMMIT_REF_SLUG
+    url: https://${CI_COMMIT_REF_SLUG}.review.retail-store.internal
+    on_stop: stop-review
+    auto_stop_in: 4 hours
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  REVIEW APP — ${CI_COMMIT_REF_SLUG}             ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      for service in cart catalog checkout orders ui; do
+        CHART_PATH="src/${service}/chart"
+        if [ -d "${CI_PROJECT_DIR}/${CHART_PATH}" ]; then
+          echo "━━━ Deploying ${service} ━━━"
+          helm upgrade --install "${service}" \
+            "${CI_PROJECT_DIR}/${CHART_PATH}" \
+            --namespace "${DEPLOY_NAMESPACE}" \
+            --create-namespace \
+            --set image.repository="${CI_REGISTRY_IMAGE}/${service}" \
+            --set image.tag="${IMAGE_TAG}" \
+            --set image.pullPolicy=Always \
+            --set replicaCount=1 \
+            --atomic \
+            --timeout 3m \
+            --wait \
+            2>&1 | tail -10
+        fi
+      done
+
+      echo ""
+      echo "✅ Review app deployed to namespace: ${DEPLOY_NAMESPACE}"
+      kubectl -n "${DEPLOY_NAMESPACE}" get pods
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+  needs:
+    - job: build-cart
+      optional: true
+    - job: build-catalog
+      optional: true
+    - job: build-checkout
+      optional: true
+    - job: build-orders
+      optional: true
+    - job: build-ui
+      optional: true
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# STOP REVIEW — Cleanup review app
+# ---------------------------------------------------------------------------
+stop-review:
+  stage: deploy-staging
+  image:
+    name: alpine/helm:3.17.3
+    entrypoint: [""]
+  variables:
+    GIT_STRATEGY: none
+    DEPLOY_NAMESPACE: "retail-store-review-${CI_COMMIT_REF_SLUG}"
+  before_script:
+    - apk add --no-cache curl
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+  script:
+    - |
+      echo "Cleaning up review app: ${DEPLOY_NAMESPACE}"
+      for service in cart catalog checkout orders ui; do
+        helm uninstall "${service}" -n "${DEPLOY_NAMESPACE}" 2>/dev/null || true
+      done
+      kubectl delete namespace "${DEPLOY_NAMESPACE}" --ignore-not-found=true || true
+      echo "✅ Review app cleaned up"
+  environment:
+    name: review/$CI_COMMIT_REF_SLUG
+    action: stop
+  when: manual
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      allow_failure: true
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# SMOKE TESTS — Post-Staging Health Validation
+# ---------------------------------------------------------------------------
+smoke-test-staging:
+  stage: integration-test
+  image: curlimages/curl:8.14.1
+  variables:
+    GIT_STRATEGY: none
+    DEPLOY_NAMESPACE: retail-store-staging
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  SMOKE TESTS — Staging Environment               ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      # Service health endpoints
+      # These use Kubernetes DNS: <service>.<namespace>.svc.cluster.local
+      SERVICES=(
+        "cart:80:/actuator/health"
+        "catalog:80:/health"
+        "checkout:80:/health"
+        "orders:80:/actuator/health"
+        "ui:80:/actuator/health"
+      )
+
+      FAILED=0
+      for entry in "${SERVICES[@]}"; do
+        SERVICE=$(echo "${entry}" | cut -d: -f1)
+        PORT=$(echo "${entry}" | cut -d: -f2)
+        PATH_HEALTH=$(echo "${entry}" | cut -d: -f3)
+        URL="http://${SERVICE}.${DEPLOY_NAMESPACE}.svc.cluster.local:${PORT}${PATH_HEALTH}"
+
+        echo ""
+        echo "━━━ ${SERVICE} ━━━"
+        echo "  URL: ${URL}"
+
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${URL}" 2>/dev/null || echo "000")
+
+        if [ "${HTTP_STATUS}" = "200" ]; then
+          echo "  ✅ HTTP ${HTTP_STATUS} — Healthy"
+        else
+          echo "  ❌ HTTP ${HTTP_STATUS} — UNHEALTHY"
+          FAILED=1
+        fi
+      done
+
+      echo ""
+      if [ "${FAILED}" = "1" ]; then
+        echo "❌ Some services failed health checks!"
+        exit 1
+      else
+        echo "✅ All services healthy in staging"
+      fi
+  allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: deploy-staging
+  tags:
+    - docker
+
+# ---------------------------------------------------------------------------
+# DAST — Dynamic Application Security Testing (Staging)
+# ---------------------------------------------------------------------------
+# Runs OWASP ZAP baseline scan against the staging UI endpoint.
+# Only runs after staging deploy is successful.
+# ---------------------------------------------------------------------------
+dast-staging:
+  stage: integration-test
+  image:
+    name: ghcr.io/zaproxy/zaproxy:stable
+    entrypoint: [""]
+  variables:
+    GIT_STRATEGY: none
+    DAST_TARGET_URL: "http://ui.retail-store-staging.svc.cluster.local:80"
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════╗"
+      echo "║  DAST — OWASP ZAP Baseline Scan (Staging)       ║"
+      echo "╚══════════════════════════════════════════════════╝"
+
+      # Run ZAP baseline scan (passive scan — no active attacks)
+      zap-baseline.py \
+        -t "${DAST_TARGET_URL}" \
+        -r "zap-report.html" \
+        -J "zap-report.json" \
+        -I || true  # Don't fail pipeline on findings; report only
+
+      echo ""
+      echo "✅ DAST scan completed — check artifacts for report"
+  artifacts:
+    when: always
+    paths:
+      - zap-report.html
+      - zap-report.json
+    expire_in: 30 days
+  allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: deploy-staging
+  tags:
+    - docker

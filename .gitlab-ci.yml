@@ -1,0 +1,255 @@
+# =============================================================================
+#
+#  ██████╗ ██╗████████╗██╗      █████╗ ██████╗      ██████╗██╗   ██████╗██████╗
+# ██╔════╝ ██║╚══██╔══╝██║     ██╔══██╗██╔══██╗    ██╔════╝██║  ██╔════╝██╔══██╗
+# ██║  ███╗██║   ██║   ██║     ███████║██████╔╝    ██║     ██║  ██║     ██║  ██║
+# ██║   ██║██║   ██║   ██║     ██╔══██║██╔══██╗    ██║     ██║  ██║     ██║  ██║
+# ╚██████╔╝██║   ██║   ███████╗██║  ██║██████╔╝    ╚██████╗██║  ╚██████╗██████╔╝
+#  ╚═════╝ ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═════╝     ╚═════╝╚═╝   ╚═════╝╚═════╝
+#
+# =============================================================================
+#  RETAIL CLOUD NATIVE PLATFORM — Production-Grade GitLab CI/CD Pipeline
+# =============================================================================
+#
+#  Architecture: Polyglot Microservices (Java, Go, Node.js)
+#  Services:     cart | catalog | checkout | orders | ui
+#  Registry:     GitLab Container Registry (OCI)
+#  Charts:       Helm v3 → GitLab Helm Registry
+#  CD:           ArgoCD (GitOps) + Argo Rollouts (Canary)
+#  Security:     Gitleaks, SAST, Secret Detection, Dependency Scan,
+#                Container Scan (Trivy), License Compliance, IaC Scan, DAST
+#
+#  Pipeline Flow:
+#    preflight → security → lint → test → build → scan → publish-chart
+#              → deploy-staging → integration-test → deploy-production → notify
+#
+#  Author: Senior DevOps/CICD Engineer
+#  Docs:   See .gitlab/ci/*.yml for detailed stage documentation
+#
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# PIPELINE STAGES — Ordered execution flow
+# ---------------------------------------------------------------------------
+# Each stage completes before the next begins (unless `needs:` overrides).
+# Jobs within a stage run in parallel.
+# ---------------------------------------------------------------------------
+stages:
+  - preflight          # Change detection, cache warming
+  - security           # Gitleaks, SAST, Secret Detection, Dep Scan, IaC Scan
+  - lint               # Hadolint, Helm lint, YAML lint, ShellCheck, Terraform
+  - test               # Unit tests (Maven/Go/Jest), integration tests
+  - build              # Kaniko Docker build → GitLab Container Registry
+  - scan               # Trivy container image scanning (post-build)
+  - publish-chart      # Helm chart packaging, registry push, values.yaml update
+  - deploy-staging     # Staging/review-app deployment
+  - integration-test   # Smoke tests, DAST against staging
+  - deploy-production  # Manual gate → ArgoCD sync / Helm deploy
+  - notify             # Pipeline & deployment notifications
+
+# ---------------------------------------------------------------------------
+# GLOBAL VARIABLES
+# ---------------------------------------------------------------------------
+# These variables are available to ALL jobs in the pipeline.
+# Service-specific variables are set in individual job definitions.
+#
+# ⚠️  SENSITIVE VARIABLES (secrets, tokens, keys) must be set in:
+#     Settings → CI/CD → Variables (protected + masked)
+# ---------------------------------------------------------------------------
+variables:
+  # --- Docker / Registry ---
+  DOCKER_BUILDKIT: "1"
+  DOCKER_TLS_CERTDIR: "/certs"
+
+  # --- Git ---
+  GIT_STRATEGY: fetch                        # Faster than clone for most jobs
+  GIT_DEPTH: 20                              # Shallow clone (sufficient for MR diffs)
+  GIT_SUBMODULE_STRATEGY: none
+
+  # --- Pipeline Behavior ---
+  FF_USE_FASTZIP: "true"                     # Faster artifact compression
+  ARTIFACT_COMPRESSION_LEVEL: "fast"         # Balance speed vs size
+  CACHE_COMPRESSION_LEVEL: "fast"
+  TRANSFER_METER_FREQUENCY: "5s"             # Progress reporting for large uploads
+
+  # --- Kubernetes Namespaces ---
+  STAGING_NAMESPACE: retail-store-staging
+  PRODUCTION_NAMESPACE: retail-store
+
+  # --- Timeouts ---
+  HELM_TIMEOUT: "5m"
+  KUBECTL_TIMEOUT: "180s"
+
+# ---------------------------------------------------------------------------
+# GLOBAL DEFAULT SETTINGS
+# ---------------------------------------------------------------------------
+# Applied to all jobs unless overridden at job level.
+# ---------------------------------------------------------------------------
+default:
+  # Retry transient infrastructure failures (not code failures)
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - scheduler_failure
+      - api_failure
+
+  # Global timeout — individual jobs can override
+  timeout: 30m
+
+  # Interruptible — auto-cancel pipelines for the same branch
+  interruptible: true
+
+# ---------------------------------------------------------------------------
+# WORKFLOW RULES — When to create/skip pipelines
+# ---------------------------------------------------------------------------
+# Prevents duplicate pipelines (e.g., both MR + branch push).
+# ---------------------------------------------------------------------------
+workflow:
+  rules:
+    # Run on merge request events
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # Run on default branch pushes
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    # Run on git tags (releases)
+    - if: $CI_COMMIT_TAG
+    # Run on manual triggers (web UI, API)
+    - if: $CI_PIPELINE_SOURCE == "web"
+    # Run on scheduled pipelines (nightly security scans, etc.)
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    # Skip branch pushes that also have an open MR (prevents duplicates)
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    # Allow other branch pushes
+    - if: $CI_COMMIT_BRANCH
+
+# ---------------------------------------------------------------------------
+# INCLUDE — Modular Pipeline Definitions
+# ---------------------------------------------------------------------------
+# Each file handles one concern. This keeps the root file clean and
+# makes it easy to find, debug, and modify specific pipeline stages.
+# ---------------------------------------------------------------------------
+include:
+  # Reusable job templates (hidden jobs that other jobs extend)
+  - local: .gitlab/ci/templates.yml
+
+  # Security scanning (Gitleaks, SAST, Secret Detection, Dep Scan, IaC)
+  - local: .gitlab/ci/security.yml
+
+  # Code quality & linting (Hadolint, Helm, YAML, Shell, Terraform, ESLint)
+  - local: .gitlab/ci/lint.yml
+
+  # Unit & integration tests (Maven, Go, Jest)
+  - local: .gitlab/ci/test.yml
+
+  # Docker builds (Kaniko) + container scanning (Trivy)
+  - local: .gitlab/ci/build.yml
+
+  # Helm chart packaging, registry push, values.yaml update
+  - local: .gitlab/ci/publish-chart.yml
+
+  # Staging deployment + review apps + smoke tests + DAST
+  - local: .gitlab/ci/deploy-staging.yml
+
+  # Production deployment + verification + rollback
+  - local: .gitlab/ci/deploy-production.yml
+
+  # Pipeline & deployment notifications (Slack, Teams, webhooks)
+  - local: .gitlab/ci/notifications.yml
+
+  # GitLab-managed SAST template (auto-detects analyzers)
+  - template: Security/SAST.gitlab-ci.yml
+
+  # GitLab-managed Secret Detection template
+  - template: Security/Secret-Detection.gitlab-ci.yml
+
+# ---------------------------------------------------------------------------
+# PREFLIGHT — Pipeline Initialization & Change Detection
+# ---------------------------------------------------------------------------
+# This job runs first to determine which services changed.
+# Downstream jobs use `rules:changes` for per-service filtering.
+# ---------------------------------------------------------------------------
+preflight:
+  stage: preflight
+  image: alpine:3.22
+  script:
+    - |
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  RETAIL CLOUD NATIVE PLATFORM — CI/CD Pipeline             ║"
+      echo "╠══════════════════════════════════════════════════════════════╣"
+      echo "║                                                            ║"
+      echo "║  Pipeline ID:    ${CI_PIPELINE_ID}                         ║"
+      echo "║  Source:         ${CI_PIPELINE_SOURCE}                     ║"
+      echo "║  Branch:         ${CI_COMMIT_REF_NAME}                     ║"
+      echo "║  Commit:         ${CI_COMMIT_SHORT_SHA}                    ║"
+      echo "║  Author:         ${GITLAB_USER_NAME}                       ║"
+      echo "║  Timestamp:      $(date -u +%Y-%m-%dT%H:%M:%SZ)           ║"
+      echo "║                                                            ║"
+      echo "╠══════════════════════════════════════════════════════════════╣"
+      echo "║  COMMIT MESSAGE                                            ║"
+      echo "╠══════════════════════════════════════════════════════════════╣"
+      echo "║  ${CI_COMMIT_TITLE}                                        ║"
+      echo "║                                                            ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+
+      echo ""
+      echo "━━━ Environment Info ━━━"
+      echo "  GitLab Runner:   ${CI_RUNNER_DESCRIPTION:-unknown}"
+      echo "  Runner Tags:     ${CI_RUNNER_TAGS:-none}"
+      echo "  Registry:        ${CI_REGISTRY}"
+      echo "  Registry Image:  ${CI_REGISTRY_IMAGE}"
+      echo ""
+      echo "━━━ Service Change Detection ━━━"
+      echo "  (Downstream jobs use rules:changes for granular triggering)"
+      echo ""
+
+      # List changed files for visibility
+      if [ -n "${CI_MERGE_REQUEST_TARGET_BRANCH_SHA}" ]; then
+        echo "  Changed files (MR diff):"
+        git diff --name-only "${CI_MERGE_REQUEST_TARGET_BRANCH_SHA}...${CI_COMMIT_SHA}" 2>/dev/null | head -30 || echo "  (unable to compute diff)"
+      else
+        echo "  Changed files (last commit):"
+        git diff --name-only HEAD~1 2>/dev/null | head -30 || echo "  (first commit or shallow clone)"
+      fi
+
+      echo ""
+      echo "━━━ Pipeline stages: preflight → security → lint → test → build → scan → publish-chart → deploy-staging → integration-test → deploy-production → notify ━━━"
+  rules:
+    - when: always
+  tags:
+    - docker
+
+# =============================================================================
+# CI/CD VARIABLES TO CONFIGURE IN GITLAB UI
+# =============================================================================
+# Navigate to: Settings → CI/CD → Variables
+#
+# Required Variables:
+# ┌─────────────────────────┬──────────────────────────────────────────────┐
+# │ Variable                │ Description                                  │
+# ├─────────────────────────┼──────────────────────────────────────────────┤
+# │ (auto) CI_REGISTRY      │ GitLab Container Registry URL (automatic)   │
+# │ (auto) CI_REGISTRY_USER │ Registry username (automatic)               │
+# │ (auto) CI_REGISTRY_PASS │ Registry password (automatic)               │
+# └─────────────────────────┴──────────────────────────────────────────────┘
+#
+# Optional Variables:
+# ┌──────────────────────────┬──────────────────────────────────────────────┐
+# │ Variable                 │ Description                                  │
+# ├──────────────────────────┼──────────────────────────────────────────────┤
+# │ KUBECONFIG               │ Base64 kubeconfig for staging cluster        │
+# │ KUBECONFIG_PRODUCTION    │ Base64 kubeconfig for production (protected) │
+# │ ARGOCD_SERVER            │ ArgoCD server URL (e.g., argocd.example.com) │
+# │ ARGOCD_AUTH_TOKEN        │ ArgoCD API token (protected + masked)        │
+# │ WEBHOOK_URL              │ Generic webhook URL for notifications        │
+# │ SLACK_WEBHOOK_URL        │ Slack incoming webhook URL                   │
+# │ FORCE_BUILD_ALL          │ Set to "true" to force all service builds    │
+# └──────────────────────────┴──────────────────────────────────────────────┘
+#
+# Variable Flags:
+#   - Protected: Only available on protected branches/tags
+#   - Masked:    Hidden in job logs (use for all secrets)
+#   - Expanded:  Allow variable reference expansion
+#
+# =============================================================================

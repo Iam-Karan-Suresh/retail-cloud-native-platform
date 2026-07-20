@@ -1,0 +1,133 @@
+# =============================================================================
+# GITLEAKS CONFIGURATION — Production-Grade Secret Detection
+# =============================================================================
+# Custom rules + allowlists tailored for the Retail Cloud Native Platform.
+# Reference: https://github.com/gitleaks/gitleaks#configuration
+# =============================================================================
+
+title = "Retail Cloud Native Platform — Gitleaks Config"
+
+# ---------------------------------------------------------------------------
+# GLOBAL ALLOWLIST — Paths/patterns to skip entirely
+# ---------------------------------------------------------------------------
+[allowlist]
+  description = "Global allowlist — known safe files"
+
+  # Large attribution/license files contain package metadata, not secrets
+  paths = [
+    '''ATTRIBUTION\.md$''',
+    '''LICENSE$''',
+    '''go\.sum$''',
+    '''package-lock\.json$''',
+    '''yarn\.lock$''',
+    '''\.mvn/''',
+    '''mvnw(\.cmd)?$''',
+    '''\.terraform\.lock\.hcl$''',
+    '''\.helmignore$''',
+    '''docs/images/''',
+  ]
+
+# ---------------------------------------------------------------------------
+# CUSTOM RULES — Project-specific secret patterns
+# ---------------------------------------------------------------------------
+
+# AWS Access Key ID
+[[rules]]
+  id = "aws-access-key-id"
+  description = "AWS Access Key ID"
+  regex = '''(?i)(AKIA[0-9A-Z]{16})'''
+  tags = ["aws", "credentials"]
+  [rules.allowlist]
+    paths = [
+      '''ATTRIBUTION\.md$''',
+      '''\.md$''',
+    ]
+
+# AWS Secret Access Key
+[[rules]]
+  id = "aws-secret-access-key"
+  description = "AWS Secret Access Key"
+  regex = '''(?i)aws_secret_access_key\s*=\s*['\"]?([A-Za-z0-9/+=]{40})['\"]?'''
+  tags = ["aws", "credentials"]
+
+# Generic API Key / Token
+[[rules]]
+  id = "generic-api-key"
+  description = "Generic API Key"
+  regex = '''(?i)(api[_-]?key|api[_-]?token|access[_-]?token)\s*[:=]\s*['\"]?([a-zA-Z0-9_\-]{20,})['\"]?'''
+  tags = ["api", "credentials"]
+  [rules.allowlist]
+    paths = [
+      '''\.md$''',
+      '''openapi\.yml$''',
+      '''chart/''',
+    ]
+
+# Private Key (PEM)
+[[rules]]
+  id = "private-key-pem"
+  description = "Private Key (PEM format)"
+  regex = '''-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----'''
+  tags = ["key", "pem"]
+
+# Database Connection String with Password
+[[rules]]
+  id = "database-connection-string"
+  description = "Database connection string with embedded password"
+  regex = '''(?i)(postgres|mysql|mongodb|redis):\/\/[^:]+:([^@\s]{8,})@'''
+  tags = ["database", "credentials"]
+  [rules.allowlist]
+    # Allow default/dummy passwords in compose and chart values
+    paths = [
+      '''compose/''',
+      '''chart/values.*\.yaml$''',
+      '''docker-compose\.yaml$''',
+    ]
+    regexes = [
+      '''guest:guest@''',
+      '''password:''',
+    ]
+
+# GitLab CI/CD Variable Leak
+[[rules]]
+  id = "gitlab-ci-variable-leak"
+  description = "Hardcoded value that should be a CI/CD variable"
+  regex = '''(?i)(CI_REGISTRY_PASSWORD|CI_JOB_TOKEN|DEPLOY_TOKEN)\s*=\s*['\"]?([a-zA-Z0-9_\-]{10,})['\"]?'''
+  tags = ["gitlab", "ci"]
+
+# Slack Webhook
+[[rules]]
+  id = "slack-webhook"
+  description = "Slack Webhook URL"
+  regex = '''https://hooks\.slack\.com/services/[A-Za-z0-9+/]{44,}'''
+  tags = ["slack", "webhook"]
+
+# JWT Token
+[[rules]]
+  id = "jwt-token"
+  description = "JSON Web Token"
+  regex = '''eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'''
+  tags = ["jwt", "token"]
+  [rules.allowlist]
+    paths = [
+      '''test/''',
+      '''\.md$''',
+    ]
+
+# Kubernetes Secret Data (base64 encoded)
+[[rules]]
+  id = "k8s-secret-data"
+  description = "Kubernetes Secret with hardcoded base64 data"
+  regex = '''(?i)kind:\s*Secret[\s\S]{0,200}data:[\s\S]{0,100}[A-Za-z0-9+/]{20,}={0,2}'''
+  tags = ["kubernetes", "secret"]
+  [rules.allowlist]
+    paths = [
+      '''chart/templates/''',
+    ]
+
+# Terraform State Secrets
+[[rules]]
+  id = "terraform-state-secret"
+  description = "Terraform state file (should never be committed)"
+  regex = '''\"serial\":\s*\d+,\s*\"lineage\":'''
+  tags = ["terraform", "state"]

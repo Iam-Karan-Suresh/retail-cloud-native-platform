@@ -1,0 +1,7 @@
+apiVersion: v2
+name: retail-store-sample-cart-chart
+description: >-
+  A Helm chart for the Retail cloud native platform application carts
+  service
+type: application
+version: 1.2.2
