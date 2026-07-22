@@ -20,6 +20,8 @@ spec:
             - "-target=all"
           ports:
             - containerPort: 3200
+            - containerPort: 4317
+            - containerPort: 4318
           resources:
             requests:
               cpu: 100m
